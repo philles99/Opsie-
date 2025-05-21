@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Opsie Email Assistant</title>
+
+    <!-- Office JavaScript API -->
+    <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+
+    <!-- jQuery -->
+    <script type="text/javascript" src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+
+    <!-- Office UI Fabric for styling -->
+    <link rel="stylesheet" href="https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css" />
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="taskpane.css" />
+</head>
+
+<body class="ms-font-m ms-Fabric">
+    <div class="container">
+        <div class="header">
+            <h1>Opsie Email Assistant</h1>
+            <button id="settings-button" title="Settings">Settings</button>
+            <button id="close-button" class="close-button">×</button>
+        </div>
+        
+        <!-- Debug Information Section -->
+        <div class="debug-section">
+            <div id="debug-info" style="background: #f0f0f0; padding: 10px; margin: 10px 0; font-size: 12px; display: none;">
+                Loading diagnostic information...
+            </div>
+            
+            <div id="loading-steps" style="background: #e8f4ff; padding: 10px; margin: 10px 0; font-size: 12px; display: none; max-height: 150px; overflow-y: auto; font-family: monospace;">
+                Initializing...
+            </div>
+            
+            <div id="error-display" style="color: #721c24; background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; margin: 10px 0; display: none; max-height: 300px; overflow-y: auto;">
+                <!-- Errors will be displayed here -->
+            </div>
+            
+            <div id="full-log-container" style="display: none; margin: 10px 0;">
+                <h3 style="font-size: 14px; margin: 5px 0;">Full Debug Log</h3>
+                <div id="full-log" style="background: #333; color: #eee; padding: 10px; font-family: monospace; font-size: 11px; height: 200px; overflow-y: auto;">
+                    <!-- Full log entries will be displayed here -->
+                </div>
+            </div>
+            
+            <div class="debug-buttons" style="display: flex; gap: 5px;">
+                <button id="toggle-debug" class="action-button" style="background: #6c757d; margin: 5px 0; font-size: 12px;">
+                    Show Debug Info
+                </button>
+                <button id="toggle-full-log" class="action-button" style="background: #6c757d; margin: 5px 0; font-size: 12px;">
+                    Show Full Log
+                </button>
+            </div>
+        </div>
+
+        <!-- Authentication Error Container -->
+        <div id="auth-error-container" class="auth-container" style="display: none;">
+            <div class="auth-content">
+                <h2 class="ms-font-xl">Authentication Required</h2>
+                <p class="ms-font-m">Please log in to use the Opsie Email Assistant</p>
+                <button id="auth-error-login-button" class="ms-Button ms-Button--primary">
+                    <span class="ms-Button-label">Sign In</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Authentication Container -->
+        <div id="auth-container" class="auth-container" style="display: none;">
+            <div class="auth-content">
+                <h2 class="ms-font-xl">Authentication Required</h2>
+                <p class="ms-font-m">Please log in to use the Opsie Email Assistant</p>
+                
+                <div class="auth-form">
+                    <div class="form-group">
+                        <label for="email">Email</label>
+                        <input type="email" id="auth-email" placeholder="Enter your email" class="ms-TextField-field">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="auth-password" placeholder="Enter your password" class="ms-TextField-field">
+                    </div>
+                    <div class="form-actions">
+                        <button id="login-button" class="ms-Button ms-Button--primary">
+                            <span class="ms-Button-label">Sign In</span>
+                        </button>
+                        <div id="login-loading" class="loading-spinner">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                    <div class="auth-links">
+                        <a href="https://opsie.io/forgot-password" target="_blank">Forgot password?</a>
+                        <a href="https://opsie.io/signup" target="_blank">Create account</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div id="main-content">
+            <!-- Status messages -->
+            <div id="status-container"></div>
+
+            <!-- Email information -->
+            <div id="email-info" class="section">
+                <h2>Information</h2>
+                <p><strong>Subject:</strong> <span id="email-subject">Loading...</span></p>
+                <p><strong>From:</strong> <span id="email-from">Loading...</span></p>
+                <p><strong>To:</strong> <span id="email-to">Loading...</span></p>
+                <p><strong>Preview:</strong> <span id="email-body-preview">Loading...</span></p>
+                
+                <!-- Add saved status display -->
+                <div id="saved-status" class="saved-status" style="display: none;">
+                    <div class="saved-badge">✓ Saved</div>
+                    <div class="saved-details">This email has been saved to the database</div>
+                </div>
+                
+                <!-- Add handling status display -->
+                <div id="handling-status" class="handling-status" style="display: none;">
+                    <div class="handling-badge">✓ Handled</div>
+                    <div id="handled-by-info" class="handling-details">This email was marked as handled</div>
+                    <div id="handling-note-display" class="handling-note" style="display: none;"></div>
+                </div>
+                
+                <!-- Add Debug Buttons -->
+                <div style="margin-top: 20px; padding: 10px; background-color: #ffe6e6; border: 1px solid #ff9999;">
+                    <h3 style="color: #cc0000;">Debug Actions</h3>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button style="background-color: #ff5722; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.addTestNoteGlobal(); return false;">
+                            Add Test Note
+                        </button>
+                        <button style="background-color: #9C27B0; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.loadNotesForCurrentEmail(); return false;">
+                            Reload Notes
+                        </button>
+                        <button style="background-color: #607D8B; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.OpsieApi.showNotification('Current email ID: ' + (currentEmailData ? currentEmailData.messageId : 'None'), 'info'); return false;">
+                            Check Email ID
+                        </button>
+                        <button style="background-color: #2196F3; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.checkCurrentMessageId(); return false;">
+                            Check ID Details
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button style="background-color: #03A9F4; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.getUserId().then(id => window.OpsieApi.showNotification('Current user ID: ' + id, 'info')).catch(err => window.OpsieApi.showNotification('Error: ' + err.message, 'error')); return false;">
+                            Check User ID
+                        </button>
+                        <button style="background-color: #4CAF50; color: white; padding: 8px 12px; border: none; cursor: pointer;" 
+                            onclick="window.OpsieApi.getUserInfo().then(info => window.OpsieApi.showNotification('User info: ' + JSON.stringify(info), 'info')).catch(err => window.OpsieApi.showNotification('Error: ' + err.message, 'error')); return false;">
+                            Get User Info
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Notes Section -->
+            <div id="notes-section" class="section" style="display: none;">
+                <div class="notes-header">
+                    <h2>Notes</h2>
+                    <button id="toggle-notes-form" class="action-button" onclick="toggleNotesForm(); return false;">Add Note</button>
+                </div>
+                
+                <!-- Notes Form -->
+                <div id="notes-form-container" style="display: none;">
+                    <textarea id="note-body" placeholder="Add your note here..."></textarea>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <select id="note-category">
+                            <option value="Action Required">Action Required</option>
+                            <option value="Pending">Pending</option>
+                            <option value="Information">Information</option>
+                            <option value="Other">Other</option>
+                        </select>
+                        <button id="add-note-button" class="action-button" onclick="window.directAddNote(document.getElementById('note-body').value.trim(), document.getElementById('note-category').value); return false;">Add Note</button>
+                    </div>
+                </div>
+                
+                <!-- Add emergency test buttons with direct inline onclick attributes -->
+                <div style="margin-top: 15px; margin-bottom: 15px;">
+                    <button class="action-button" style="background-color: #ff5722;" onclick="window.addTestNoteGlobal(); return false;">
+                        Add Test Note (Global)
+                    </button>
+                </div>
+                
+                <!-- Notes List Container -->
+                <div id="notes-container">
+                    <div class="no-notes-message">
+                        No notes for this email yet. Click "Add Note" to create the first note.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action buttons -->
+            <div id="action-buttons" class="section">
+                <h2>Email Actions</h2>
+                <button id="generate-summary-button" class="action-button">Generate AI Summary</button>
+                <button id="generate-contact-button" class="action-button">Get Contact Summaries</button>
+                <button id="extract-qa-button" class="action-button">Extract Questions</button>
+                <button id="generate-reply-button" class="action-button">Generate Reply</button>
+                <button id="save-email-button" class="action-button">Save Email</button>
+                <button id="mark-handled-button" class="action-button" disabled style="background-color: #ff9800;">Mark as Handled</button>
+            </div>
+
+            <!-- Add handling modal for notes -->
+            <div id="handling-modal" class="modal-backdrop" style="display: none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>Add Handling Note</h3>
+                        <button id="handling-modal-close" class="modal-close">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Add an optional note about how this email was handled:</p>
+                        <textarea id="handling-note" placeholder="Enter handling note (optional)"></textarea>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="handling-cancel" class="modal-button">Cancel</button>
+                        <button id="handling-confirm" class="modal-button confirm-button">Mark as Handled</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- QA Section -->
+            <div id="qa-container" class="section" style="display: none;">
+                <div class="section-header">
+                    <h2>Questions & Answers</h2>
+                </div>
+                
+                <!-- Loading spinner -->
+                <div id="qa-loading-spinner" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Extracting questions and finding answers...</p>
+                </div>
+                
+                <!-- Message for when no questions are found -->
+                <div id="no-questions-message" style="display: none;">
+                    <p>No questions were found in this email.</p>
+                </div>
+                
+                <!-- List of extracted questions -->
+                <div id="qa-list"></div>
+                
+                <!-- Debug button for testing (hidden by default) -->
+                <div id="qa-debug-section" style="display: none; margin-top: 20px; padding: 10px; border-top: 1px dashed #ccc;">
+                    <h3>Debug Tools</h3>
+                    <button id="test-qa-save-button" class="action-button" style="background-color: #6c757d;">
+                        Test Q&A Save
+                    </button>
+                    <div id="qa-debug-output" style="margin-top: 10px; font-family: monospace; font-size: 12px; 
+                        white-space: pre-wrap; max-height: 200px; overflow-y: auto; background-color: #f8f9fa; padding: 10px;"></div>
+                </div>
+            </div>
+
+            <!-- Summary section -->
+            <div id="summary-container" class="section" style="display: none;">
+                <h2>Email Summary</h2>
+                <div id="summary-loading" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                </div>
+                <ul id="summary-items"></ul>
+                
+                <div class="urgency-container">
+                    <h3>Urgency Score</h3>
+                    <div class="urgency-scale">
+                        <span>Low</span>
+                        <span>Medium</span>
+                        <span>High</span>
+                    </div>
+                    <div class="urgency-meter">
+                        <div id="urgency-fill" class="urgency-fill" style="width: 0%;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contact history section -->
+            <div id="contact-container" class="section" style="display: none;">
+                <h2>Contact Information</h2>
+                <div id="contact-loading" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                </div>
+                <ul id="contact-items"></ul>
+
+                <!-- Update the search container section with improved styling and layout -->
+                <div class="search-container">
+                    <h3>Search Past Conversations</h3>
+                    <div class="improved-search-box" style="display: flex; width: 100%; margin: 12px 0;">
+                        <input type="text" id="email-search-input" placeholder="Search for topics in previous emails..." class="improved-search-input" style="min-width: 180px; height: 42px; box-sizing: border-box; width: 100%; flex: 1;">
+                        <button id="email-search-button" class="action-button search-button" style="height: 42px; white-space: nowrap;">Search</button>
+                    </div>
+                    <div class="search-hint">Enter keywords to search through all past conversations with this contact</div>
+                </div>
+
+                <div id="search-loading" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                </div>
+                <div id="search-results-container" class="search-results-container" style="display: none;">
+                    <h4 class="results-title">Search Results</h4>
+                    <div class="search-answer placeholder">Enter a search term above to find information from past conversations.</div>
+                    <div class="search-references"></div>
+                </div>
+            </div>
+
+            <!-- Reply section -->
+            <div id="reply-section" class="section">
+                <h2>Generate Email Reply</h2>
+                
+                <div class="reply-options">
+                    <div class="reply-row">
+                        <div class="reply-option">
+                            <label for="reply-tone">Tone</label>
+                            <select id="reply-tone">
+                                <option value="friendly">Friendly</option>
+                                <option value="professional" selected>Professional</option>
+                                <option value="formal">Formal</option>
+                                <option value="casual">Casual</option>
+                                <option value="concise">Concise</option>
+                            </select>
+                        </div>
+                        <div class="reply-option">
+                            <label for="reply-length">Length</label>
+                            <select id="reply-length">
+                                <option value="brief">Brief</option>
+                                <option value="standard" selected>Standard</option>
+                                <option value="detailed">Detailed</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="reply-option">
+                        <label for="reply-language">Language</label>
+                        <select id="reply-language">
+                            <option value="auto" selected>Auto-detect</option>
+                            <option value="en">English</option>
+                            <option value="fr">French</option>
+                            <option value="de">German</option>
+                            <option value="es">Spanish</option>
+                            <option value="it">Italian</option>
+                            <option value="pt">Portuguese</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Additional context input for reply -->
+                    <div class="reply-context-container">
+                        <label for="reply-additional-context">Additional Context (optional)</label>
+                        <textarea id="reply-additional-context" placeholder="Add any specific details or context for the AI..."></textarea>
+                        <div class="hint-text">Provide context such as specific points to address, your relationship with the recipient, or relevant background information.</div>
+                    </div>
+                </div>
+                
+                <!-- Add the generate button -->
+                <button id="btn-generate-reply-now" class="action-button">Generate Reply</button>
+                <div id="reply-loading" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                </div>
+
+                <div id="reply-container" style="display: none;">
+                    <h3>Generated Reply</h3>
+                    <div id="reply-preview"></div>
+                    <button id="copy-reply-button">Copy to Clipboard</button>
+                    <button id="insert-reply-button">Insert into Email</button>
+                </div>
+            </div>
+
+            <!-- Add a save loading indicator -->
+            <div id="save-loading" class="loading-spinner" style="display: none;">
+                <div class="spinner"></div>
+            </div>
+
+            <!-- Add a settings section for OpenAI API key -->
+            <div id="settings-container" class="section" style="display: none;">
+                <h2>Settings</h2>
+                
+                <!-- User Info Section -->
+                <div id="user-info-section" class="settings-subsection">
+                    <h3>User Information</h3>
+                    <div class="user-info">
+                        <p>Logged in as: <span id="settings-user-email">Loading...</span></p>
+                        <p>Team: <span id="settings-team-name">Loading...</span></p>
+                        <p>Role: <span id="settings-user-role">Loading...</span></p>
+                    </div>
+                </div>
+                
+                <!-- API Key Section -->
+                <div class="settings-subsection">
+                    <h3>OpenAI API Key</h3>
+                    <div class="form-group">
+                        <label for="openai-api-key">Your OpenAI API Key:</label>
+                        <div class="api-key-input-container">
+                            <input type="password" id="openai-api-key" placeholder="Enter your OpenAI API key" class="ms-TextField-field">
+                            <button id="save-api-key" class="action-button">Save Key</button>
+                        </div>
+                        <div class="hint-text">Your API key is stored securely in your browser's local storage and never sent to our servers.</div>
+                    </div>
+                </div>
+                
+                <!-- Team Details Section (Admins Only) -->
+                <div id="team-details-section" class="settings-subsection" style="display: none;">
+                    <div class="section-header">
+                        <h3>Team Details</h3>
+                        <button id="edit-team-details-button" class="action-button" style="padding: 5px 10px; font-size: 12px;">Edit Details</button>
+                    </div>
+                    
+                    <!-- Display view -->
+                    <div id="team-details-display">
+                        <p>Organization: <span id="team-organization">-</span></p>
+                        <p>Invoice Email: <span id="team-invoice-email">-</span></p>
+                        <p>Billing Address: <span id="team-billing-address">-</span></p>
+                        <p>Access Code: <span id="team-access-code">-</span></p>
+                        
+                        <!-- Team Members Section -->
+                        <div style="margin-top: 15px;">
+                            <h4>Team Members</h4>
+                            <div id="team-members-list" style="max-height: 150px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background-color: white; padding: 5px;">
+                                <p id="no-members-message" style="font-style: italic; color: #666; margin: 5px;">Loading team members...</p>
+                                <!-- Members will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Edit view (hidden by default) -->
+                    <div id="team-details-edit" style="display: none;">
+                        <div class="form-group">
+                            <label for="edit-team-organization">Organization:</label>
+                            <input type="text" id="edit-team-organization" placeholder="Enter organization name" class="ms-TextField-field">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="edit-team-invoice-email">Invoice Email:</label>
+                            <input type="email" id="edit-team-invoice-email" placeholder="Enter invoice email address" class="ms-TextField-field">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Billing Address:</label>
+                            <input type="text" id="edit-team-billing-street" placeholder="Street address" class="ms-TextField-field" style="margin-bottom: 5px;">
+                            <input type="text" id="edit-team-billing-city" placeholder="City" class="ms-TextField-field" style="margin-bottom: 5px;">
+                            <input type="text" id="edit-team-billing-region" placeholder="State/Province/Region" class="ms-TextField-field" style="margin-bottom: 5px;">
+                            <input type="text" id="edit-team-billing-country" placeholder="Country" class="ms-TextField-field">
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 10px;">
+                            <button id="save-team-details-button" class="action-button">Save Changes</button>
+                            <button id="cancel-team-edit-button" class="action-button" style="background-color: #607D8B;">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Join Requests Section (Admins Only) -->
+                <div id="join-requests-section" class="settings-subsection" style="display: none;">
+                    <div class="section-header">
+                        <h3>Join Requests</h3>
+                        <button id="refresh-requests-button" class="action-button" style="padding: 5px 10px; font-size: 12px;">Refresh</button>
+                    </div>
+                    
+                    <div id="join-requests-list" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background-color: white; padding: 5px;">
+                        <p id="no-requests-message" style="font-style: italic; color: #666; margin: 5px;">No pending join requests</p>
+                        <!-- Requests will be populated here -->
+                    </div>
+                </div>
+                
+                <!-- Team Management Section -->
+                <div class="settings-subsection">
+                    <h3>Team Management</h3>
+                    
+                    <!-- For members only -->
+                    <div id="member-controls" style="display: none;">
+                        <button id="leave-team-button" class="action-button" style="background-color: #ff9800;">Leave Team</button>
+                    </div>
+                    
+                    <!-- For admins only -->
+                    <div id="admin-controls" style="display: none;">
+                        <!-- Transfer admin section -->
+                        <div class="form-group">
+                            <label for="team-members-select">Transfer Admin Rights:</label>
+                            <select id="team-members-select" class="ms-TextField-field">
+                                <option value="">Select a team member</option>
+                                <!-- Team members will be populated via JavaScript -->
+                            </select>
+                            <button id="transfer-admin-button" class="action-button" style="margin-top: 5px;">Transfer Admin Rights</button>
+                        </div>
+                        
+                        <!-- Team deletion section -->
+                        <div class="form-group" style="margin-top: 15px;">
+                            <p style="color: #e74c3c; font-size: 14px; margin-bottom: 10px; font-weight: 500;">As the team admin, you can delete the entire team. This action cannot be undone.</p>
+                            <button id="delete-team-button" class="action-button" style="background-color: #e74c3c;">Delete Team</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <button id="logout-button" class="action-button" style="background-color: #e74c3c; margin-top: 15px;">Logout</button>
+                    <button id="close-settings" class="action-button" style="background-color: #607D8B; margin-top: 10px;">Close Settings</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Notifications -->
+        <div id="notification" class="notification" style="display: none;">
+            <div class="notification-icon"></div>
+            <div class="notification-content"></div>
+            <div class="notification-close">&times;</div>
+        </div>
+        
+        <!-- Custom Modal (for confirmations like logout) -->
+        <div id="custom-modal-backdrop" class="modal-backdrop" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="custom-modal-title">Confirm Action</h3>
+                    <button id="custom-modal-close" class="modal-close">×</button>
+                </div>
+                <div class="modal-body">
+                    <div id="custom-modal-body">
+                        <p>Are you sure you want to proceed?</p>
+                    </div>
+                    <textarea id="custom-modal-input" placeholder="Enter additional information..."></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button id="custom-modal-cancel" class="modal-button">Cancel</button>
+                    <button id="custom-modal-ok" class="modal-button confirm-button">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Service -->
+    <script type="text/javascript" src="api-service.js"></script>
+    
+    <!-- Custom JavaScript -->
+    <script type="text/javascript" src="taskpane.js"></script>
+
+    <!-- Additional script to handle debug UI -->
+    <script>
+        // Toggle debug info visibility
+        $(document).ready(function() {
+            $('#toggle-debug').click(function() {
+                const debugInfo = $('#debug-info');
+                const loadingSteps = $('#loading-steps');
+                const errorDisplay = $('#error-display');
+                
+                if (debugInfo.is(':visible')) {
+                    debugInfo.hide();
+                    loadingSteps.hide();
+                    $(this).text('Show Debug Info');
+                } else {
+                    debugInfo.show();
+                    loadingSteps.show();
+                    if (errorDisplay.children().length > 0) {
+                        errorDisplay.show();
+                    }
+                    $(this).text('Hide Debug Info');
+                }
+            });
+            
+            // Toggle full log visibility
+            $('#toggle-full-log').click(function() {
+                const fullLogContainer = $('#full-log-container');
+                
+                if (fullLogContainer.is(':visible')) {
+                    fullLogContainer.hide();
+                    $(this).text('Show Full Log');
+                } else {
+                    fullLogContainer.show();
+                    $(this).text('Hide Full Log');
+                    
+                    // If we have a updateDebugDisplay function, call it to refresh the log
+                    if (typeof updateDebugDisplay === 'function') {
+                        updateDebugDisplay();
+                    }
+                }
+            });
+            
+            // Add keyboard shortcut to show debug (Ctrl+Alt+D)
+            $(document).keydown(function(e) {
+                if (e.ctrlKey && e.altKey && e.which === 68) { // 'D' key
+                    $('#toggle-debug').click();
+                    return false;
+                }
+            });
+            
+            // Make debug sections visible immediately for troubleshooting
+            setTimeout(function() {
+                $('#debug-info').show();
+                $('#loading-steps').show();
+                $('#toggle-debug').text('Hide Debug Info');
+            }, 1000);
+        });
+
+        // Add this at the bottom of the file
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add debug Q&A functionality that can be enabled with URL param
+            if (window.location.search.includes('debug=true')) {
+                const debugSection = document.getElementById('qa-debug-section');
+                if (debugSection) {
+                    debugSection.style.display = 'block';
+                }
+                
+                const testButton = document.getElementById('test-qa-save-button');
+                if (testButton) {
+                    testButton.addEventListener('click', async function() {
+                        try {
+                            const debugOutput = document.getElementById('qa-debug-output');
+                            if (debugOutput) {
+                                debugOutput.textContent = 'Testing Q&A save...';
+                            }
+                            
+                            const teamId = localStorage.getItem('currentTeamId');
+                            if (!teamId) {
+                                if (debugOutput) {
+                                    debugOutput.textContent += '\nNo team ID found!';
+                                }
+                                return;
+                            }
+                            
+                            // Generate a test UUID
+                            const testUuid = window.OpsieApi.generateUUID();
+                            
+                            // Create test Q&A data
+                            const result = await window.OpsieApi.saveQuestionAnswer(
+                                'Test question ' + new Date().toISOString(),
+                                'Test answer',
+                                [],
+                                teamId,
+                                ['test', 'debug'],
+                                true
+                            );
+                            
+                            if (debugOutput) {
+                                debugOutput.textContent += '\nResult: ' + JSON.stringify(result, null, 2);
+                            }
+                        } catch (error) {
+                            const debugOutput = document.getElementById('qa-debug-output');
+                            if (debugOutput) {
+                                debugOutput.textContent += '\nError: ' + error.message;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html> 

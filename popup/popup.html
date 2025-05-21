@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Opsie Email Assistant</title>
+  <style>
+    /* Import Poppins font */
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Poppins', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', sans-serif;
+      margin: 0;
+      padding: 0;
+      width: 350px;
+      max-height: 600px;
+      background-color: #f8f9fa;
+      color: #333;
+      overflow-x: hidden;
+    }
+    
+    .popup-header {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      padding: 15px 20px;
+      text-align: center;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+    
+    .popup-header h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    
+    .popup-content {
+      padding: 15px;
+      background: linear-gradient(160deg, rgba(230, 240, 250, 0.6) 0%, rgba(240, 245, 250, 0.8) 100%);
+    }
+    
+    .form-group {
+      margin-bottom: 15px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      color: #1a3d5c;
+      font-size: 14px;
+    }
+    
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      box-sizing: border-box;
+      font-family: 'Poppins', sans-serif;
+      font-size: 14px;
+      transition: all 0.2s ease;
+    }
+    
+    .form-group input:focus, .form-group select:focus {
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+      outline: none;
+    }
+    
+    .button {
+      display: inline-block;
+      padding: 12px 15px;
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white !important;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      text-align: center;
+      width: 100%;
+      margin-bottom: 10px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      transition: all 0.3s ease;
+      font-family: 'Poppins', sans-serif;
+      font-size: 14px;
+      letter-spacing: 0.3px;
+    }
+    
+    .button:hover {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+    }
+    
+    .button:active {
+      transform: translateY(1px);
+      box-shadow: 0 2px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .button-secondary {
+      background: linear-gradient(135deg, #5f7d95 0%, #7b96ab 100%);
+    }
+    
+    .button-secondary:hover {
+      background: linear-gradient(135deg, #4c6a82 0%, #5f7d95 100%);
+    }
+    
+    .button-success {
+      background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+    }
+    
+    .button-success:hover {
+      background: linear-gradient(135deg, #219653 0%, #27ae60 100%);
+      box-shadow: 0 4px 8px rgba(39, 174, 96, 0.3);
+    }
+    
+    .button-danger {
+      background: linear-gradient(135deg, #e74c3c 0%, #f44336 100%);
+    }
+    
+    .button-danger:hover {
+      background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);
+      box-shadow: 0 4px 8px rgba(231, 76, 60, 0.3);
+    }
+    
+    .toggle-link {
+      text-align: center;
+      margin-top: 15px;
+      font-size: 14px;
+    }
+    
+    .toggle-link a {
+      color: #1a3d5c;
+      text-decoration: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: color 0.2s ease;
+    }
+    
+    .toggle-link a:hover {
+      color: #2c5282;
+      text-decoration: underline;
+    }
+    
+    .view {
+      display: none;
+    }
+    
+    .active-view {
+      display: block;
+    }
+    
+    .status-message {
+      padding: 12px 15px;
+      margin: 15px 0;
+      border-radius: 6px;
+      text-align: center;
+      font-size: 14px;
+      animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .status-error {
+      background-color: #fae7e6;
+      color: #c0392b;
+      border-left: 4px solid #e74c3c;
+    }
+    
+    .status-success {
+      background-color: #e3f8e9;
+      color: #1e8449;
+      border-left: 4px solid #27ae60;
+    }
+    
+    .status-info {
+      background-color: #e3f2fd;
+      color: #1565c0;
+      border-left: 4px solid #2196f3;
+    }
+    
+    .user-info {
+      background-color: white;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    .user-info p {
+      margin: 5px 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    
+    .team-list {
+      max-height: 200px;
+      overflow-y: auto;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      background-color: white;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    
+    .team-item {
+      padding: 10px 15px;
+      border-bottom: 1px solid #eef2f7;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .team-item:last-child {
+      border-bottom: none;
+    }
+    
+    .team-name {
+      font-weight: 600;
+      color: #1a3d5c;
+    }
+    
+    .team-join-button {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .team-join-button:hover {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+    }
+    
+    .team-member-item {
+      padding: 10px 15px;
+      border-bottom: 1px solid #eef2f7;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .team-member-item:last-child {
+      border-bottom: none;
+    }
+    
+    .team-member-item.current-user {
+      background-color: #f0f4f8;
+      font-weight: 500;
+    }
+    
+    .team-member-role {
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      color: white;
+      font-weight: 500;
+    }
+    
+    .role-admin {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+    }
+    
+    .role-member {
+      background: linear-gradient(135deg, #78909c 0%, #90a4ae 100%);
+    }
+    
+    .team-member-actions {
+      margin-top: 5px;
+    }
+    
+    .team-member-remove-btn {
+      background: linear-gradient(135deg, #e74c3c 0%, #f44336 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .team-member-remove-btn:hover {
+      background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);
+    }
+    
+    .divider {
+      margin: 20px 0;
+      border-top: 1px solid #eef2f7;
+    }
+    
+    .api-key-section, .settings-section, .team-management-section {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    h3, h4, h5 {
+      color: #1a3d5c;
+      font-weight: 600;
+      margin-top: 0;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #eef2f7;
+    }
+    
+    h3 {
+      font-size: 16px;
+    }
+    
+    h4 {
+      font-size: 15px;
+    }
+    
+    h5 {
+      font-size: 14px;
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    
+    .warning-text {
+      color: #e74c3c;
+      font-size: 14px;
+      margin-bottom: 10px;
+      font-weight: 500;
+    }
+    
+    .section-container {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    .request-item {
+      padding: 12px 15px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      background-color: #f9f9fa;
+      border: 1px solid #eef2f7;
+    }
+    
+    .status-note {
+      font-style: italic;
+      color: #666;
+      margin-top: 5px;
+      font-size: 13px;
+    }
+    
+    #team-access-code {
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-family: 'Poppins', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: #1a3d5c;
+    }
+    
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: #bbb;
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: #999;
+    }
+    
+    /* Small buttons in sections */
+    .button.small-button {
+      padding: 5px 10px;
+      font-size: 12px;
+      width: auto;
+      margin-bottom: 0;
+    }
+    
+    /* Styles for smaller controls/buttons in the popup */
+    #refresh-requests-button, 
+    #edit-team-details-button {
+      padding: 5px 10px;
+      font-size: 12px;
+      background: linear-gradient(135deg, #5f7d95 0%, #7b96ab 100%);
+    }
+    
+    #refresh-requests-button:hover, 
+    #edit-team-details-button:hover {
+      background: linear-gradient(135deg, #4c6a82 0%, #5f7d95 100%);
+    }
+    
+    /* Team join requests and details sections */
+    #join-requests-section,
+    .team-details-section {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 15px 0;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    /* Team members list */
+    #team-members-list {
+      max-height: 150px;
+      overflow-y: auto;
+      border-radius: 6px;
+      background-color: #f9f9fa;
+      padding: 5px;
+      border: 1px solid #eef2f7;
+    }
+    
+    /* Pending request section */
+    #pending-request-section {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin-top: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    /* Join requests list */
+    #join-requests-list {
+      max-height: 200px;
+      overflow-y: auto;
+      background-color: #f9f9fa;
+      border-radius: 6px;
+      border: 1px solid #eef2f7;
+      padding: 5px;
+    }
+    
+    /* Small links */
+    small {
+      color: #666;
+      display: block;
+      margin-top: 5px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="popup-header">
+    <h2>Opsie Email Assistant</h2>
+  </div>
+  
+  <div class="popup-content">
+    <!-- Status message display -->
+    <div id="status-message" class="status-message" style="display: none;"></div>
+    
+    <!-- Login View -->
+    <div id="login-view" class="view">
+      <h3>Login to your account</h3>
+      <div class="form-group">
+        <label for="login-email">Email:</label>
+        <input type="email" id="login-email" placeholder="Enter your email">
+      </div>
+      <div class="form-group">
+        <label for="login-password">Password:</label>
+        <input type="password" id="login-password" placeholder="Enter your password">
+      </div>
+      <button id="login-button" class="button">Login</button>
+      <div class="toggle-link">
+        <a id="go-to-signup">Don't have an account? Sign up</a>
+      </div>
+      <div class="toggle-link">
+        <a id="go-to-reset-password">Forgot password?</a>
+      </div>
+    </div>
+    
+    <!-- Signup View -->
+    <div id="signup-view" class="view">
+      <h3>Create a new account</h3>
+      <div class="form-group">
+        <label for="signup-first-name">First Name:</label>
+        <input type="text" id="signup-first-name" placeholder="Enter your first name">
+      </div>
+      <div class="form-group">
+        <label for="signup-last-name">Last Name:</label>
+        <input type="text" id="signup-last-name" placeholder="Enter your last name">
+      </div>
+      <div class="form-group">
+        <label for="signup-email">Email:</label>
+        <input type="email" id="signup-email" placeholder="Enter your email">
+      </div>
+      <div class="form-group">
+        <label for="signup-password">Password:</label>
+        <input type="password" id="signup-password" placeholder="Enter your password">
+      </div>
+      <div class="form-group">
+        <label for="signup-confirm-password">Confirm Password:</label>
+        <input type="password" id="signup-confirm-password" placeholder="Confirm your password">
+      </div>
+      <button id="signup-button" class="button">Sign Up</button>
+      <div class="toggle-link">
+        <a id="go-to-login">Already have an account? Login</a>
+      </div>
+    </div>
+    
+    <!-- Team Select View -->
+    <div id="team-select-view" class="view">
+      <h3>Join or Create a Team</h3>
+      
+      <div class="user-info">
+        <p>Logged in as: <span id="user-email">user@example.com</span></p>
+      </div>
+      
+      <!-- Team Creation Section -->
+      <div class="section-container">
+        <h4>Create a New Team</h4>
+        <div class="form-group">
+          <label for="create-team-name">Team Name:</label>
+          <input type="text" id="create-team-name" placeholder="Enter team name">
+        </div>
+        
+        <div class="form-group">
+          <label for="create-team-organization">Organization:</label>
+          <input type="text" id="create-team-organization" placeholder="Enter organization name">
+        </div>
+        
+        <div class="form-group">
+          <label for="create-team-invoice-email">Invoice Email:</label>
+          <input type="email" id="create-team-invoice-email" placeholder="Enter invoice email address">
+          <small style="color: #666; display: block; margin-top: 5px;">Where billing information will be sent</small>
+        </div>
+        
+        <div class="form-group">
+          <label>Billing Address:</label>
+          <input type="text" id="create-team-billing-street" placeholder="Street address" style="margin-bottom: 5px;">
+          <input type="text" id="create-team-billing-city" placeholder="City" style="margin-bottom: 5px;">
+          <input type="text" id="create-team-billing-region" placeholder="State/Province/Region" style="margin-bottom: 5px;">
+          <input type="text" id="create-team-billing-country" placeholder="Country">
+        </div>
+        
+        <button id="create-team-button" class="button button-success">Create Team</button>
+      </div>
+      
+      <div class="divider"></div>
+      
+      <!-- Team Join Section -->
+      <div class="section-container">
+        <h4>Join an Existing Team</h4>
+        <p>Enter the team access code provided by your team administrator:</p>
+        
+        <div class="form-group">
+          <label for="team-access-code-input">Team Access Code:</label>
+          <input type="text" id="team-access-code-input" placeholder="Enter access code" style="text-transform: uppercase;">
+        </div>
+        
+        <button id="request-join-team-button" class="button">Request to Join Team</button>
+      </div>
+      
+      <!-- Pending Request Status Section (Hidden by default) -->
+      <div id="pending-request-section" class="section-container" style="display: none; margin-top: 20px; background-color: #f5f5f5; padding: 15px; border-radius: 4px;">
+        <h4>Join Request Status</h4>
+        <div id="pending-request-details">
+          <p>You have a pending request to join <strong><span id="requested-team-name">Team Name</span></strong>.</p>
+          <p class="status-note">Please wait for admin approval.</p>
+        </div>
+      </div>
+      
+      <div class="divider"></div>
+      
+      <button id="logout-button" class="button button-danger">Logout</button>
+    </div>
+    
+    <!-- Main App View -->
+    <div id="main-app-view" class="view">
+      <div class="user-info">
+        <p>Logged in as: <span id="main-user-email">user@example.com</span></p>
+        <p>Team: <span id="team-name">Team Name</span></p>
+        <p>Role: <span id="user-role">member</span></p>
+      </div>
+      
+      <!-- Admin Join Requests Section (Hidden by default) -->
+      <div id="join-requests-section" style="margin-top: 15px; margin-bottom: 15px; padding: 10px; background-color: #f5f5f5; border-radius: 4px; display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h4 style="margin-top: 0; margin-bottom: 10px;">Join Requests</h4>
+          <button id="refresh-requests-button" class="button" style="padding: 5px 10px; font-size: 12px;">Refresh</button>
+        </div>
+        
+        <div id="join-requests-list" style="max-height: 200px; overflow-y: auto;">
+          <p id="no-requests-message">No pending join requests</p>
+          <!-- Requests will be populated here -->
+        </div>
+      </div>
+      
+      <div class="team-details-section" style="margin-top: 15px; margin-bottom: 15px; padding: 10px; background-color: #f5f5f5; border-radius: 4px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h4 style="margin-top: 0; margin-bottom: 10px;">Team Details</h4>
+          <button id="edit-team-details-button" class="button" style="padding: 5px 10px; font-size: 12px; display: none;">Edit Details</button>
+        </div>
+        
+        <!-- Display view -->
+        <div id="team-details-display">
+          <p>Organization: <span id="team-organization">-</span></p>
+          <p>Invoice Email: <span id="team-invoice-email">-</span></p>
+          <p>Billing Address: <span id="team-billing-address">-</span></p>
+          <p>Access Code: <span id="team-access-code">-</span></p>
+          
+          <!-- Team Members Section -->
+          <div style="margin-top: 15px;">
+            <h5 style="margin-top: 0; margin-bottom: 10px;">Team Members</h5>
+            <div id="team-members-list" style="max-height: 150px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background-color: white; padding: 5px;">
+              <p id="no-members-message" style="font-style: italic; color: #666; margin: 5px;">Loading team members...</p>
+              <!-- Members will be populated here -->
+            </div>
+          </div>
+        </div>
+        
+        <!-- Edit view (hidden by default) -->
+        <div id="team-details-edit" style="display: none;">
+          <div class="form-group">
+            <label for="edit-team-organization">Organization:</label>
+            <input type="text" id="edit-team-organization" placeholder="Enter organization name">
+          </div>
+          
+          <div class="form-group">
+            <label for="edit-team-invoice-email">Invoice Email:</label>
+            <input type="email" id="edit-team-invoice-email" placeholder="Enter invoice email address">
+          </div>
+          
+          <div class="form-group">
+            <label>Billing Address:</label>
+            <input type="text" id="edit-team-billing-street" placeholder="Street address" style="margin-bottom: 5px;">
+            <input type="text" id="edit-team-billing-city" placeholder="City" style="margin-bottom: 5px;">
+            <input type="text" id="edit-team-billing-region" placeholder="State/Province/Region" style="margin-bottom: 5px;">
+            <input type="text" id="edit-team-billing-country" placeholder="Country">
+          </div>
+          
+          <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button id="save-team-details-button" class="button button-success" style="flex: 1;">Save Changes</button>
+            <button id="cancel-team-edit-button" class="button button-secondary" style="flex: 1;">Cancel</button>
+          </div>
+        </div>
+      </div>
+      
+      <div class="api-key-section">
+        <h3>OpenAI API Key</h3>
+        <div class="form-group">
+          <label for="openai-api-key">Your OpenAI API Key:</label>
+          <input type="password" id="openai-api-key" placeholder="Enter your OpenAI API key">
+        </div>
+        <button id="save-api-key-button" class="button">Save API Key</button>
+      </div>
+      
+      <div class="settings-section">
+        <h3>Settings</h3>
+        
+        <!-- Team Management Section -->
+        <div class="team-management-section">
+          <h4>Team Management</h4>
+          
+          <!-- Role-specific controls that will be shown/hidden via JavaScript -->
+          
+          <!-- For members only -->
+          <div id="member-controls" style="display: none;">
+            <button id="leave-team-button" class="button button-secondary">Leave Team</button>
+          </div>
+          
+          <!-- For admins only -->
+          <div id="admin-controls" style="display: none;">
+            <!-- Transfer admin section -->
+            <div class="form-group">
+              <label for="team-members-select">Transfer Admin Rights:</label>
+              <select id="team-members-select">
+                <option value="">Select a team member</option>
+                <!-- Team members will be populated via JavaScript -->
+              </select>
+              <button id="transfer-admin-button" class="button button-secondary">Transfer Admin Rights</button>
+            </div>
+            
+            <!-- Team deletion section -->
+            <div class="form-group">
+              <p class="warning-text">As the team admin, you can delete the entire team. This action cannot be undone.</p>
+              <button id="delete-team-button" class="button button-danger">Delete Team</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="divider"></div>
+        <button id="main-logout-button" class="button button-danger">Logout</button>
+      </div>
+    </div>
+    
+    <!-- Password Reset Request View -->
+    <div id="reset-password-view" class="view">
+      <h3>Reset Your Password</h3>
+      <p>Enter your email address and we'll send you a reset token.</p>
+      <div class="form-group">
+        <label for="reset-email">Email:</label>
+        <input type="email" id="reset-email" placeholder="Enter your email">
+      </div>
+      <button id="send-reset-email-button" class="button">Send Reset Token</button>
+      <div class="toggle-link">
+        <a id="go-back-to-login">Back to Login</a>
+      </div>
+      <div class="toggle-link">
+        <a id="already-have-token">Already have a token?</a>
+      </div>
+    </div>
+    
+    <!-- Password Reset Token View -->
+    <div id="reset-token-view" class="view">
+      <h3>Enter Reset Token</h3>
+      <p>Enter the token that was sent to your email address.</p>
+      <div class="form-group">
+        <label for="reset-token-email">Email Address:</label>
+        <input type="email" id="reset-token-email" placeholder="Enter your email address">
+      </div>
+      <div class="form-group">
+        <label for="reset-token">Reset Token:</label>
+        <input type="text" id="reset-token" placeholder="Enter the token from your email">
+      </div>
+      <div class="form-group">
+        <label for="new-password">New Password:</label>
+        <input type="password" id="new-password" placeholder="Enter your new password">
+      </div>
+      <div class="form-group">
+        <label for="confirm-new-password">Confirm Password:</label>
+        <input type="password" id="confirm-new-password" placeholder="Confirm your new password">
+      </div>
+      <button id="reset-password-button" class="button">Reset Password</button>
+      <div class="toggle-link">
+        <a id="back-to-login">Back to Login</a>
+      </div>
+    </div>
+  </div>
+  
+  <script src="popup.js" type="module"></script>
+</body>
+</html> 

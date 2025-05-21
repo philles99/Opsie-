@@ -1,0 +1,5807 @@
+/* Opsie Email Assistant - Outlook Addin */
+
+// Visible error reporting for debugging
+let initErrors = [];
+let loadingSteps = [];
+
+// Create a local log that persists even if console isn't available
+let localLog = [];
+
+// Global variable to store the current email data
+let currentEmailData = null;
+
+// Define global variable for current email notes
+let currentEmailNotes = [];
+
+// Function to log messages to both console and local log
+function log(message, type = 'info', data = null) {
+    const entry = {
+        time: new Date().toISOString(),
+        type: type,
+        message: message,
+        data: data
+    };
+    
+    // Add to local log
+    localLog.push(entry);
+    
+    // Try to log to console
+    try {
+        if (type === 'error') {
+            console.error(`[${entry.time}] ${message}`, data || '');
+        } else if (type === 'warn') {
+            console.warn(`[${entry.time}] ${message}`, data || '');
+        } else {
+            console.log(`[${entry.time}] ${message}`, data || '');
+        }
+    } catch (e) {
+        // Console not available
+    }
+    
+    // If debug elements exist, update them
+    try {
+        updateDebugDisplay();
+    } catch (e) {
+        // Debug display not available yet
+    }
+}
+
+// Function to log loading steps visibly
+function logStep(step) {
+    log(step, 'step');
+    loadingSteps.push(`${new Date().toISOString().substr(11, 8)} - ${step}`);
+    updateLoadingSteps();
+}
+
+// Update loading steps display
+function updateLoadingSteps() {
+    if (document.getElementById('loading-steps')) {
+        document.getElementById('loading-steps').innerHTML = loadingSteps.join('<br>');
+    }
+}
+
+// Update the full debug display with local log
+function updateDebugDisplay() {
+    const logContainer = document.getElementById('full-log');
+    if (logContainer) {
+        const logHtml = localLog.map(entry => {
+            const typeClass = entry.type === 'error' ? 'error-log' : 
+                              entry.type === 'warn' ? 'warn-log' : 'info-log';
+            return `<div class="${typeClass}">
+                [${entry.time.substr(11, 8)}] ${entry.message}
+                ${entry.data ? `<pre>${JSON.stringify(entry.data, null, 2)}</pre>` : ''}
+            </div>`;
+        }).join('');
+        logContainer.innerHTML = logHtml;
+    }
+}
+
+// Function to display errors visibly
+function displayError(error, context = 'general') {
+    const errorMsg = {
+        context: context,
+        message: error.message || String(error),
+        stack: error.stack,
+        time: new Date().toISOString()
+    };
+    
+    log(`Error in ${context}: ${errorMsg.message}`, 'error', errorMsg);
+    initErrors.push(errorMsg);
+    
+    // If the DOM is already loaded, update the error display
+    if (document.getElementById('error-display')) {
+        const errorDisplay = document.getElementById('error-display');
+        errorDisplay.style.display = 'block';
+        
+        const errorHtml = initErrors.map(err => 
+            `<div class="error-item">
+                <strong>${err.context}:</strong> ${err.message}
+                <pre class="error-stack">${err.stack || 'No stack trace available'}</pre>
+            </div>`
+        ).join('<hr>');
+        
+        errorDisplay.innerHTML = errorHtml;
+    }
+}
+
+// Ensure the debug sections are visible on initialization
+function showDebugSections() {
+    try {
+        if (document.getElementById('debug-info')) {
+            document.getElementById('debug-info').style.display = 'block';
+        }
+        if (document.getElementById('loading-steps')) {
+            document.getElementById('loading-steps').style.display = 'block';
+        }
+        if (document.getElementById('toggle-debug')) {
+            document.getElementById('toggle-debug').textContent = 'Hide Debug Info';
+        }
+    } catch (e) {
+        // Elements might not be available yet
+    }
+}
+
+// Call this early and repeatedly until it succeeds
+setInterval(showDebugSections, 500);
+
+// Wrap Office.onReady in try-catch
+Office.onReady((info) => {
+    try {
+        logStep('Office.onReady called');
+        
+        // Display Office diagnostic info
+        if (info) {
+            logStep(`Host: ${info.host}, Platform: ${info.platform}`);
+        }
+        
+        // Add version info if available
+        try {
+            if (Office.context && Office.context.mailbox && Office.context.mailbox.diagnostics) {
+                const diagnostics = Office.context.mailbox.diagnostics;
+                logStep(`Outlook Version: ${diagnostics.hostVersion}, Host: ${diagnostics.hostName}`);
+            }
+        } catch (versionError) {
+            displayError(versionError, 'version-check');
+        }
+        
+        // Initialize UI
+        $(document).ready(() => {
+            try {
+                logStep('Document ready event fired');
+                
+                // Update debug info in the UI
+                if (document.getElementById('debug-info')) {
+                    const debugInfo = document.getElementById('debug-info');
+                    debugInfo.innerHTML = `
+                        <strong>Add-in Debug Info:</strong><br>
+                        Time: ${new Date().toLocaleString()}<br>
+                        Office Host: ${info.host || 'Unknown'}<br>
+                        Platform: ${info.platform || 'Unknown'}<br>
+                        ${Office.context?.mailbox?.diagnostics ? 
+                          `Outlook Version: ${Office.context.mailbox.diagnostics.hostVersion}<br>
+                           Host Name: ${Office.context.mailbox.diagnostics.hostName}` : 
+                          'Mailbox diagnostics not available'}
+                    `;
+                }
+                
+                // Then continue with your regular initialization
+                logStep('Starting main initialization');
+                
+                // Initialize the UI and set up event listeners
+                setupEventListeners();
+                
+                // Check if user is authenticated
+                checkAuthStatus().then(isAuthenticated => {
+                    if (isAuthenticated) {
+                        logStep('User is authenticated');
+                        
+                        // Only call loadCurrentEmail if Office.context.mailbox.item is available
+                        if (Office.context.mailbox && Office.context.mailbox.item) {
+                            loadCurrentEmail();
+                        } else {
+                            log('No email item available yet', 'warning');
+                        }
+                    } else {
+                        logStep('User is not authenticated');
+                        
+                        // Add null checks for DOM elements
+                        const authContainer = document.getElementById('auth-container');
+                        if (authContainer) {
+                            authContainer.style.display = 'block';
+                        } else {
+                            log('auth-container element not found', 'warning');
+                        }
+                        
+                        const mainContent = document.getElementById('main-content');
+                        if (mainContent) {
+                            mainContent.style.display = 'none';
+                        } else {
+                            log('main-content element not found', 'warning');
+                        }
+                    }
+                }).catch(authError => {
+                    displayError(authError, 'auth-check');
+                });
+                
+                // Start heartbeat to check authentication status periodically
+                startAuthHeartbeat();
+                
+                logStep('Initialization complete');
+            } catch (docReadyError) {
+                displayError(docReadyError, 'document-ready');
+            }
+        });
+    } catch (officeReadyError) {
+        displayError(officeReadyError, 'office-ready');
+    }
+});
+
+// Catch unhandled rejections
+window.addEventListener('unhandledrejection', event => {
+    displayError(event.reason, 'unhandled-promise-rejection');
+});
+
+// Catch global errors
+window.addEventListener('error', event => {
+    displayError({
+        message: event.message,
+        stack: `at ${event.filename}:${event.lineno}:${event.colno}`
+    }, 'global-error');
+});
+
+// Check if the user is authenticated
+async function checkAuthStatus() {
+    try {
+        window.OpsieApi.log('Checking authentication status', 'info', { context: 'auth-check' });
+        
+        // Get DOM elements with null checks
+        const authErrorContainer = document.getElementById('auth-error-container');
+        const authContainer = document.getElementById('auth-container');
+        const mainContent = document.getElementById('main-content');
+        
+        // Store current auth state before checking
+        const wasAuthenticated = authErrorContainer && authErrorContainer.style.display === 'none';
+        
+        // Check authentication status using the API
+        const isAuthenticated = await window.OpsieApi.isAuthenticated();
+        window.OpsieApi.log(`Authentication status: ${isAuthenticated ? 'Authenticated' : 'Not authenticated'}`, 'info', { context: 'auth-check' });
+        
+        if (isAuthenticated) {
+            // User is authenticated, show main content
+            if (authErrorContainer) {
+                authErrorContainer.style.display = 'none';
+            } else {
+                window.OpsieApi.log('auth-error-container element not found', 'warning', { context: 'auth-check' });
+            }
+            
+            if (authContainer) {
+                authContainer.style.display = 'none';
+            } else {
+                window.OpsieApi.log('auth-container element not found', 'warning', { context: 'auth-check' });
+            }
+            
+            if (mainContent) {
+                mainContent.style.display = 'block';
+            } else {
+                window.OpsieApi.log('main-content element not found', 'warning', { context: 'auth-check' });
+            }
+            
+            // If user went from unauthenticated to authenticated
+            if (!wasAuthenticated) {
+                window.OpsieApi.log('Auth state changed: User is now authenticated', 'info', { context: 'auth-check' });
+                
+                // Initialize team ID and user information with a callback that will reload email data
+                window.OpsieApi.initTeamAndUserInfo(function(teamInfo) {
+                    window.OpsieApi.log('Team info initialized within auth status callback', 'info', {
+                        teamId: teamInfo.teamId || 'Not available',
+                        userId: teamInfo.userId || 'Not available',
+                        source: teamInfo.fromCache ? 'cache' : (teamInfo.fromApi ? 'api' : 'token'),
+                        context: 'auth-check-callback'
+                    });
+                    
+                    // Check if team ID is available
+                    if (!teamInfo.teamId) {
+                        window.OpsieApi.log('Team ID not available after team init callback', 'warning', {
+                            context: 'auth-check-callback'
+                        });
+                        window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                        return;
+                    }
+                    
+                    // Reload current email data if there's an email available
+                    if (Office.context.mailbox && Office.context.mailbox.item) {
+                        window.OpsieApi.log('Reloading current email data after authentication with team ID: ' + teamInfo.teamId, 'info', {
+                            context: 'auth-check-callback',
+                            teamId: teamInfo.teamId
+                        });
+                        window.OpsieApi.showNotification('You are now logged in. Refreshing email data...', 'info');
+                        
+                        setTimeout(async () => {
+                            try {
+                                await loadCurrentEmail();
+                                window.OpsieApi.showNotification('Email data refreshed successfully!', 'success');
+                            } catch (refreshError) {
+                                window.OpsieApi.log('Error refreshing email data after auth change', 'error', {
+                                    error: refreshError,
+                                    context: 'auth-refresh'
+                                });
+                            }
+                        }, 1000); // Short delay to allow UI updates to settle
+                    }
+                });
+            } else {
+                // User was already authenticated, just ensure team info is initialized
+                try {
+                    const teamInitResult = await window.OpsieApi.initTeamAndUserInfo();
+                    
+                    // New format returns an object
+                    if (teamInitResult && typeof teamInitResult === 'object') {
+                        window.OpsieApi.log('Team and user initialization result:', 'info', {
+                            teamId: teamInitResult.teamId || 'Not available',
+                            userId: teamInitResult.userId || 'Not available',
+                            source: teamInitResult.fromCache ? 'cache' : (teamInitResult.fromApi ? 'api' : 'token'),
+                            context: 'auth-check'
+                        });
+                        
+                        // Store the userId in localStorage for later use if present
+                        if (teamInitResult.userId) {
+                            localStorage.setItem('userId', teamInitResult.userId);
+                            window.OpsieApi.log('Stored userId in localStorage', 'info', {
+                                userId: teamInitResult.userId,
+                                context: 'auth-check'
+                            });
+                        }
+                        
+                        if (!teamInitResult.teamId) {
+                            window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                        }
+                    } else {
+                        // Old format returned a boolean
+                        window.OpsieApi.log('Team ID initialization result (legacy format):', 'info', {
+                            success: teamInitResult,
+                            teamId: teamInitResult ? localStorage.getItem('currentTeamId') : 'Not initialized',
+                            context: 'auth-check'
+                        });
+                        
+                        // Try to get userId from localStorage since the old format might have set it
+                        const userId = localStorage.getItem('userId');
+                        if (userId) {
+                            window.OpsieApi.log('Found userId in localStorage after initialization', 'info', {
+                                userId: userId,
+                                context: 'auth-check'
+                            });
+                        }
+                        
+                        if (!teamInitResult) {
+                            window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                        }
+                    }
+                } catch (teamInitError) {
+                    window.OpsieApi.log('Error initializing team information:', 'error', {
+                        error: teamInitError,
+                        context: 'auth-check'
+                    });
+                    window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                }
+            }
+        } else {
+            // User is not authenticated, show auth container
+            if (authErrorContainer) {
+                authErrorContainer.style.display = 'flex';
+            } else {
+                window.OpsieApi.log('auth-error-container element not found', 'warning', { context: 'auth-check' });
+            }
+            
+            if (authContainer) {
+                authContainer.style.display = 'flex';
+            } else {
+                window.OpsieApi.log('auth-container element not found', 'warning', { context: 'auth-check' });
+            }
+            
+            if (mainContent) {
+                mainContent.style.display = 'none';
+            } else {
+                window.OpsieApi.log('main-content element not found', 'warning', { context: 'auth-check' });
+            }
+        }
+        
+        // Return authentication status
+        return isAuthenticated;
+    } catch (error) {
+        window.OpsieApi.log('Error in auth-check: ' + error.message, 'error', {
+            context: 'auth-check',
+            message: error.message,
+            stack: error.stack,
+            time: new Date().toISOString()
+        });
+        
+        // Show error UI in a safe way
+        const authErrorContainer = document.getElementById('auth-error-container');
+        if (authErrorContainer) {
+            authErrorContainer.style.display = 'flex';
+        }
+        
+        const authContainer = document.getElementById('auth-container');
+        if (authContainer) {
+            authContainer.style.display = 'flex';
+        }
+        
+        const mainContent = document.getElementById('main-content');
+        if (mainContent) {
+            mainContent.style.display = 'none';
+        }
+        
+        if (document.getElementById('main-content')) {
+            document.getElementById('main-content').style.display = 'none';
+        }
+        
+        window.OpsieApi.showNotification('Authentication error: ' + error.message, 'error');
+        
+        return false;
+    }
+}
+
+// Setup event listeners for UI components
+function setupEventListeners() {
+    try {
+        // Main action buttons
+        const generateSummaryButton = document.getElementById('generate-summary-button');
+        if (generateSummaryButton) {
+            generateSummaryButton.addEventListener('click', handleGenerateSummary);
+        }
+        
+        const generateContactButton = document.getElementById('generate-contact-button');
+        if (generateContactButton) {
+            generateContactButton.addEventListener('click', handleGetContact);
+        }
+        
+        const generateReplyButton = document.getElementById('generate-reply-button');
+        if (generateReplyButton) {
+            generateReplyButton.addEventListener('click', handleGenerateReply);
+        }
+        
+        const saveEmailButton = document.getElementById('save-email-button');
+        if (saveEmailButton) {
+            saveEmailButton.addEventListener('click', handleSaveEmail);
+        }
+        
+        // Extract Questions button
+        const extractQuestionsButton = document.getElementById('extract-qa-button');
+        if (extractQuestionsButton) {
+            extractQuestionsButton.addEventListener('click', handleExtractQuestions);
+        }
+        
+        // Add event listener for the Mark as Handled button
+        const markHandledButton = document.getElementById('mark-handled-button');
+        if (markHandledButton) {
+            markHandledButton.addEventListener('click', showHandlingModal);
+        }
+        
+        // Add event listeners for the handling modal
+        const handlingModalClose = document.getElementById('handling-modal-close');
+        if (handlingModalClose) {
+            handlingModalClose.addEventListener('click', hideHandlingModal);
+        }
+        
+        const handlingCancel = document.getElementById('handling-cancel');
+        if (handlingCancel) {
+            handlingCancel.addEventListener('click', hideHandlingModal);
+        }
+        
+        const handlingConfirm = document.getElementById('handling-confirm');
+        if (handlingConfirm) {
+            handlingConfirm.addEventListener('click', function() {
+                const note = document.getElementById('handling-note').value.trim();
+                hideHandlingModal();
+                markEmailAsHandled(note);
+            });
+        }
+        
+        // Add keyboard event listener to handling note textarea
+        const handlingNote = document.getElementById('handling-note');
+        if (handlingNote) {
+            handlingNote.addEventListener('keydown', function(e) {
+                // Submit on Ctrl+Enter or Cmd+Enter
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    const note = this.value.trim();
+                    hideHandlingModal();
+                    markEmailAsHandled(note);
+                    e.preventDefault();
+                }
+            });
+        }
+        
+        // Button that's actually in the reply section
+        const btnGenerateReplyNow = document.getElementById('btn-generate-reply-now');
+        if (btnGenerateReplyNow) {
+            btnGenerateReplyNow.addEventListener('click', handleGenerateReply);
+        }
+        
+        // Reply action buttons
+        const copyReplyButton = document.getElementById('copy-reply-button');
+        if (copyReplyButton) {
+            copyReplyButton.addEventListener('click', handleCopyReply);
+        }
+        
+        const insertReplyButton = document.getElementById('insert-reply-button');
+        if (insertReplyButton) {
+            insertReplyButton.addEventListener('click', handleInsertReply);
+        }
+        
+        // Search functionality
+        const emailSearchButton = document.getElementById('email-search-button');
+        if (emailSearchButton) {
+            emailSearchButton.addEventListener('click', handleSearch);
+        }
+        
+        // Set up all settings-related event listeners
+        setupSettingsEventListeners();
+        
+        // Login button (for authentication)
+        const loginButton = document.getElementById('login-button');
+        if (loginButton) {
+            loginButton.addEventListener('click', handleLogin);
+        }
+        
+        // Add keyboard event listeners for the login form
+        const authEmailInput = document.getElementById('auth-email');
+        const authPasswordInput = document.getElementById('auth-password');
+        
+        if (authEmailInput) {
+            authEmailInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    if (authPasswordInput) {
+                        authPasswordInput.focus();
+                    } else {
+                        handleLogin();
+                    }
+                    e.preventDefault();
+                }
+            });
+        }
+        
+        if (authPasswordInput) {
+            authPasswordInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    handleLogin();
+                    e.preventDefault();
+                }
+            });
+        }
+        
+        // Auth error login button (shown when authentication errors occur)
+        const authErrorLoginButton = document.getElementById('auth-error-login-button');
+        if (authErrorLoginButton) {
+            authErrorLoginButton.addEventListener('click', function() {
+                // Show the regular login form
+                const authErrorContainer = document.getElementById('auth-error-container');
+                const authContainer = document.getElementById('auth-container');
+                
+                if (authErrorContainer) {
+                    authErrorContainer.style.display = 'none';
+                }
+                
+                if (authContainer) {
+                    authContainer.style.display = 'flex';
+                }
+                
+                // Focus the email input if available
+                const emailInput = document.getElementById('auth-email');
+                if (emailInput) {
+                    emailInput.focus();
+                }
+            });
+        }
+        
+        // Error handling for notification close buttons
+        const notificationCloseButtons = document.querySelectorAll('.notification-close');
+        notificationCloseButtons.forEach(button => {
+            button.addEventListener('click', function() {
+                this.parentElement.style.display = 'none';
+            });
+        });
+        
+        // Load saved API key
+        loadApiKey();
+        
+        log('Event listeners set up successfully');
+    } catch (error) {
+        log('Error setting up event listeners: ' + error.message, 'error', error);
+    }
+}
+
+// Toggle settings visibility
+function toggleSettings() {
+    const settingsContainer = document.getElementById('settings-container');
+    if (settingsContainer) {
+        if (settingsContainer.style.display === 'none' || !settingsContainer.style.display) {
+            settingsContainer.style.display = 'block';
+            // Load the API key to show in the input
+            loadApiKey();
+        } else {
+            settingsContainer.style.display = 'none';
+        }
+    }
+}
+
+// Load API key from storage
+function loadApiKey() {
+    try {
+        const apiKeyInput = document.getElementById('openai-api-key');
+        if (apiKeyInput) {
+            const savedKey = localStorage.getItem('openaiApiKey');
+            if (savedKey) {
+                // Mask the key when displaying
+                apiKeyInput.value = '••••••••••••••••••••••' + savedKey.substring(savedKey.length - 5);
+                apiKeyInput.dataset.masked = 'true';
+                showApiKeyStatus(true, 'API key saved');
+            } else {
+                apiKeyInput.value = '';
+                apiKeyInput.dataset.masked = 'false';
+                showApiKeyStatus(false, 'No API key saved');
+            }
+
+            // Clear value when clicked if it's masked
+            apiKeyInput.addEventListener('focus', function() {
+                if (this.dataset.masked === 'true') {
+                    this.value = '';
+                    this.dataset.masked = 'false';
+                }
+            });
+        }
+    } catch (error) {
+        log('Error loading API key: ' + error.message, 'error', error);
+    }
+}
+
+// Save API key to storage
+function saveApiKey() {
+    try {
+        const apiKeyInput = document.getElementById('openai-api-key');
+        if (apiKeyInput && apiKeyInput.value.trim()) {
+            const apiKey = apiKeyInput.value.trim();
+            
+            // Only save if it's a new key (not masked)
+            if (apiKeyInput.dataset.masked !== 'true') {
+                // Validate API key format (basic check)
+                if (apiKey.startsWith('sk-')) {
+                    localStorage.setItem('openaiApiKey', apiKey);
+                    showNotification('API key saved successfully!', 'success');
+                    
+                    // Mask the key in the UI
+                    apiKeyInput.value = '••••••••••••••••••••••' + apiKey.substring(apiKey.length - 5);
+                    apiKeyInput.dataset.masked = 'true';
+                    showApiKeyStatus(true, 'API key saved');
+                } else {
+                    showErrorNotification('Invalid API key format. OpenAI API keys start with "sk-"');
+                }
+            }
+        } else {
+            showErrorNotification('Please enter an API key');
+        }
+    } catch (error) {
+        log('Error saving API key: ' + error.message, 'error', error);
+        showErrorNotification('Error saving API key: ' + error.message);
+    }
+}
+
+// Show API key status
+function showApiKeyStatus(isValid, message) {
+    try {
+        // Look for existing status element
+        let statusElement = document.querySelector('.api-key-status');
+        
+        // Create if it doesn't exist
+        if (!statusElement) {
+            statusElement = document.createElement('div');
+            statusElement.className = 'api-key-status';
+            
+            // Insert after the API key input container
+            const container = document.querySelector('.api-key-input-container');
+            if (container) {
+                container.insertAdjacentElement('afterend', statusElement);
+            }
+        }
+        
+        // Set the message and style
+        if (isValid) {
+            statusElement.textContent = message;
+            statusElement.style.color = '#28a745';
+        } else {
+            statusElement.textContent = message;
+            statusElement.style.color = '#dc3545';
+        }
+    } catch (error) {
+        log('Error showing API key status: ' + error.message, 'error', error);
+    }
+}
+
+// Disable login controls during authentication
+function disableLoginControls() {
+    const loginButton = document.getElementById('login-button');
+    const emailInput = document.getElementById('auth-email');
+    const passwordInput = document.getElementById('auth-password');
+    
+    if (loginButton) {
+        loginButton.disabled = true;
+    }
+    
+    if (emailInput) {
+        emailInput.disabled = true;
+    }
+    
+    if (passwordInput) {
+        passwordInput.disabled = true;
+    }
+    
+    log('Login controls disabled', 'info');
+}
+
+// Enable login controls after authentication attempt
+function enableLoginControls() {
+    const loginButton = document.getElementById('login-button');
+    const emailInput = document.getElementById('auth-email');
+    const passwordInput = document.getElementById('auth-password');
+    
+    if (loginButton) {
+        loginButton.disabled = false;
+    }
+    
+    if (emailInput) {
+        emailInput.disabled = false;
+    }
+    
+    if (passwordInput) {
+        passwordInput.disabled = false;
+    }
+    
+    // Show the auth container again in case of error
+    const authContainer = document.getElementById('auth-container');
+    const loginLoading = document.getElementById('login-loading');
+    
+    if (authContainer) {
+        authContainer.style.display = 'flex';
+    }
+    
+    if (loginLoading) {
+        loginLoading.style.display = 'none';
+    }
+    
+    log('Login controls enabled', 'info');
+}
+
+// Function to show login error message
+function showLoginError(message) {
+    // Show error notification since there's no specific login error element
+    showErrorNotification('Login error: ' + message);
+    enableLoginControls();
+}
+
+// Handle login button click
+async function handleLogin() {
+    try {
+        disableLoginControls();
+        // Show loading indicator and hide the form inputs
+        const loginLoading = document.getElementById('login-loading');
+        if (loginLoading) {
+            loginLoading.style.display = 'flex';
+        }
+        
+        let email = document.getElementById('auth-email').value;
+        let password = document.getElementById('auth-password').value;
+        
+        // Validate input
+        if (!email || !password) {
+            showLoginError('Please enter email and password');
+            return;
+        }
+        
+        // Attempt login with Supabase
+        const loginResult = await loginWithSupabase(email, password);
+        
+        if (loginResult.error) {
+            showLoginError(loginResult.error.message || 'Login failed');
+            return;
+        }
+        
+        log('Login successful, initializing session', 'info', loginResult);
+        
+        // Hide auth container
+        const authContainer = document.getElementById('auth-container');
+        if (authContainer) {
+            authContainer.style.display = 'none';
+        }
+        
+        // Update UI to show the main content
+        const mainContent = document.getElementById('main-content');
+        if (mainContent) {
+            mainContent.style.display = 'block';
+        }
+        
+        // Make sure all main UI sections are visible
+        showMainUISections();
+        
+        // Make sure to reload user settings information to update the UI with new user info
+        // Force a refresh to ensure we're not using cached data
+        try {
+            await loadUserSettingsInfo(true);
+            log('User settings information refreshed after login', 'info');
+        } catch (settingsError) {
+            log('Error refreshing user settings after login', 'error', settingsError);
+        }
+        
+        // Initialize team and user info with a callback that will reload the email data once team info is ready
+        window.OpsieApi.initTeamAndUserInfo(function(teamInfo) {
+            log('Team info initialized within login callback', 'info', teamInfo);
+            
+            // Only try to reload email data if we have an active mailbox context and a team ID
+            if (Office.context.mailbox && teamInfo.teamId) {
+                log('Reloading email data after login with team ID: ' + teamInfo.teamId, 'info');
+                
+                // Add a small delay to ensure all UI components have updated
+                setTimeout(() => {
+                    try {
+                        loadCurrentEmail();
+                        log('Email reload triggered after successful login', 'info');
+                    } catch (emailError) {
+                        log('Error reloading email after login', 'error', emailError);
+                    }
+                }, 500);
+            } else {
+                if (!Office.context.mailbox) {
+                    log('Cannot reload email - Office.context.mailbox is not available', 'warning');
+                }
+                if (!teamInfo.teamId) {
+                    log('Cannot reload email - team ID is not available', 'warning');
+                }
+            }
+        });
+        
+        // Start periodic check for authentication status
+        startAuthCheck();
+        
+    } catch (error) {
+        showLoginError(error.message || 'An error occurred during login');
+        log('Login error:', 'error', error);
+    } finally {
+        enableLoginControls();
+    }
+}
+
+// Load the current email content
+function loadCurrentEmail() {
+    const item = Office.context.mailbox.item;
+    
+    if (!item) {
+        showErrorNotification('No email is selected');
+        return;
+    }
+    
+    // Reset email data
+    currentEmailData = null;
+    
+    // Start loading indicator - add null checks
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const emailDetails = document.getElementById('email-details');
+    
+    if (loadingIndicator) {
+        loadingIndicator.style.display = 'block';
+    } else {
+        log('Warning: loading-indicator element not found', 'warning');
+    }
+    
+    if (emailDetails) {
+        emailDetails.style.display = 'none';
+    } else {
+        log('Warning: email-details element not found', 'warning');
+    }
+    
+    // First, get basic email data
+    const emailData = getEmailData();
+    
+    // Log the data we have
+    log('Initial email data:', 'info', {
+        subject: emailData.subject,
+        sender: emailData.sender,
+        timestamp: emailData.timestamp
+    });
+    
+    // Set loading status
+    logStep('Getting email body');
+    
+    // Get email body
+    Office.context.mailbox.item.body.getAsync(
+        Office.CoercionType.Text,
+        function (result) {
+            if (result.status === Office.AsyncResultStatus.Succeeded) {
+                // Add the message body to the email data
+                emailData.body = result.value;
+                emailData.hasBody = true;
+                emailData.bodyLength = result.value.length;
+                
+                // Log success
+                log('Retrieved email body, length: ' + result.value.length + ' characters', 'info');
+                
+                // Store the current email data globally
+                currentEmailData = emailData;
+                
+                // Extra check for message ID
+                ensureMessageId(emailData).then(() => {
+                    // Check if email already exists in database
+                    if (emailData.messageId) {
+                        log('Checking if email exists in database: ' + emailData.messageId, 'info');
+                        
+                        checkIfEmailExists(emailData.messageId, emailData)
+                            .then(checkResult => {
+                                // Hide loading indicator - add null checks
+                                if (loadingIndicator) {
+                                    loadingIndicator.style.display = 'none';
+                                }
+                                
+                                if (emailDetails) {
+                                    emailDetails.style.display = 'block';
+                                }
+                                
+                                logStep('Email loaded');
+                                
+                                if (checkResult.exists) {
+                                    log('Email exists in database', 'info', checkResult);
+                                    
+                                    // Show the message already exists 
+                                    // Use function to update saved status in UI
+                                    updateSavedStatus(checkResult);
+                                    
+                                    // If email has summary and urgency, display it
+                                    // Note: For secondary matches, this should already be displayed in checkIfEmailExists
+                                    if (checkResult.summary && checkResult.foundBy !== 'secondary') {
+                                        log('Existing email has summary data, displaying it', 'info');
+                                        displayExistingSummary(checkResult.summary, checkResult.urgency);
+                                    }
+                                    
+                                    // Store the existing message data in currentEmailData
+                                    if (!currentEmailData.existingMessage) {
+                                        currentEmailData.existingMessage = {};
+                                    }
+                                    
+                                    // Update with existing message information
+                                    currentEmailData.existingMessage = {
+                                        ...currentEmailData.existingMessage,
+                                        exists: true,
+                                        message: checkResult.message,
+                                        user: checkResult.user,
+                                        savedAt: checkResult.savedAt,
+                                        summary: checkResult.summary,
+                                        urgency: checkResult.urgency
+                                    };
+                                    
+                                    // If there is handling information, update that too
+                                    if (checkResult.handling) {
+                                        currentEmailData.existingMessage.handling = checkResult.handling;
+                                        
+                                        // Update the handling status display
+                                        updateHandlingStatus({
+                                            message: checkResult.message,
+                                            handling: checkResult.handling
+                                        });
+                                    }
+                                    
+                                    // Show the notes section since the email is saved
+                                    const notesSection = document.getElementById('notes-section');
+                                    if (notesSection) {
+                                        notesSection.style.display = 'block';
+                                        
+                                        // Load notes for the current email
+                                        loadNotesForCurrentEmail();
+                                    }
+                                } else {
+                                    log('Email not found in database', 'info');
+                                    // Enable the save button
+                                    const saveButton = document.getElementById('save-email-button');
+                                    if (saveButton) {
+                                        saveButton.disabled = false;
+                                        saveButton.textContent = 'Save Email';
+                                        saveButton.style.backgroundColor = '#4CAF50';
+                                    }
+                                }
+                                
+                                // Make sure all appropriate UI sections are visible
+                                showMainUISections();
+                                
+                                // Update email details display
+                                updateEmailDetails();
+                                
+                                // Update notes UI based on whether the email is saved
+                                updateNotesUIState();
+                            })
+                            .catch(error => {
+                                log('Error checking email existence:', 'error', error);
+                                // Hide loading indicator - add null checks
+                                if (loadingIndicator) {
+                                    loadingIndicator.style.display = 'none';
+                                }
+                                
+                                if (emailDetails) {
+                                    emailDetails.style.display = 'block';
+                                }
+                                
+                                // Reset the save button in case of error
+                                const saveButton = document.getElementById('save-email-button');
+                                if (saveButton) {
+                                    saveButton.disabled = false;
+                                    saveButton.textContent = 'Save Email';
+                                    saveButton.style.backgroundColor = '#4CAF50';
+                                }
+                                
+                                // Make sure all appropriate UI sections are visible
+                                showMainUISections();
+                                
+                                // Update email details display even if we had an error
+                                updateEmailDetails();
+                                
+                                // Update notes UI based on whether the email is saved
+                                updateNotesUIState();
+                            });
+                    } else {
+                        log('No message ID available to check database', 'warning');
+                        // Hide loading indicator - add null checks
+                        if (loadingIndicator) {
+                            loadingIndicator.style.display = 'none';
+                        }
+                        
+                        if (emailDetails) {
+                            emailDetails.style.display = 'block';
+                        }
+                        
+                        // Reset the save button since we can't check the database
+                        const saveButton = document.getElementById('save-email-button');
+                        if (saveButton) {
+                            saveButton.disabled = false;
+                            saveButton.textContent = 'Save Email';
+                            saveButton.style.backgroundColor = '#4CAF50';
+                        }
+                        
+                        // Make sure all appropriate UI sections are visible
+                        showMainUISections();
+                        
+                        // Update email details display anyway
+                        updateEmailDetails();
+                        
+                        // Update notes UI based on whether the email is saved
+                        updateNotesUIState();
+                    }
+                }).catch(error => {
+                    log('Error ensuring message ID:', 'error', error);
+                    // Hide loading indicator - add null checks
+                    if (loadingIndicator) {
+                        loadingIndicator.style.display = 'none';
+                    }
+                    
+                    if (emailDetails) {
+                        emailDetails.style.display = 'block';
+                    }
+                    
+                    // Reset the save button since there was an error
+                    const saveButton = document.getElementById('save-email-button');
+                    if (saveButton) {
+                        saveButton.disabled = false;
+                        saveButton.textContent = 'Save Email';
+                        saveButton.style.backgroundColor = '#4CAF50';
+                    }
+                    
+                    // Make sure all appropriate UI sections are visible
+                    showMainUISections();
+                    
+                    // Update email details display even if we had an error
+                    updateEmailDetails();
+                    
+                    // Update notes UI based on whether the email is saved
+                    updateNotesUIState();
+                });
+            } else {
+                log('Error getting email body', 'error', result.error);
+                // Hide loading indicator - add null checks
+                if (loadingIndicator) {
+                    loadingIndicator.style.display = 'none';
+                }
+                
+                if (emailDetails) {
+                    emailDetails.style.display = 'block';
+                }
+                
+                // Reset the save button since we couldn't get the email body
+                const saveButton = document.getElementById('save-email-button');
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = 'Save Email';
+                    saveButton.style.backgroundColor = '#4CAF50';
+                }
+                
+                // Make sure all appropriate UI sections are visible
+                showMainUISections();
+                
+                // Update email details display even if we had an error
+                updateEmailDetails();
+                
+                // Update notes UI based on whether the email is saved
+                updateNotesUIState();
+                
+                // Set loading status - error
+                logStep('Error loading email body');
+            }
+        }
+    );
+}
+
+// Helper function to ensure we have the best message ID available
+async function ensureMessageId(emailData) {
+    // Wait a short time for any asynchronous ID extraction to complete
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // If we don't have a message ID yet, try once more
+    if (!emailData.messageId && Office.context.mailbox.item) {
+        const item = Office.context.mailbox.item;
+        
+        try {
+            // Try the REST ID conversion as it's most reliable
+            if (item.itemId && Office.context.mailbox.convertToRestId) {
+                const restId = Office.context.mailbox.convertToRestId(
+                    item.itemId, 
+                    Office.MailboxEnums.RestVersion.v2_0
+                );
+                
+                if (restId) {
+                    emailData.messageId = restId;
+                    log('Used REST ID conversion in ensureMessageId: ' + restId, 'info');
+                    
+                    // Look for the AAkAL format
+                    const idMatch = restId.match(/AAkAL[A-Za-z0-9+/=%]+/);
+                    if (idMatch) {
+                        emailData.messageId = idMatch[0];
+                        log('Extracted URL format ID (AAkAL) in ensureMessageId', 'info');
+                    }
+                }
+            }
+        } catch (error) {
+            log('Error in ensureMessageId: ' + error.message, 'warning');
+        }
+    }
+    
+    log('Final message ID in ensureMessageId: ' + (emailData.messageId || 'Not available'), 'info');
+}
+
+// Check if an email already exists in the database
+async function checkIfEmailExists(messageId, emailData) {
+    try {
+        // First, ensure we have authentication
+        const isAuthed = await window.OpsieApi.isAuthenticated();
+        if (!isAuthed) {
+            log('User not authenticated, cannot check email existence', 'warning');
+            return { exists: false };
+        }
+        
+        // Get the team ID
+        let teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID found, cannot check email existence', 'warning');
+            return { exists: false };
+        }
+        
+        // Get email data for secondary check if not provided
+        emailData = emailData || currentEmailData || getEmailData();
+        
+        log(`Checking for existing email with primary ID: ${messageId}`, 'info');
+        if (emailData && emailData.sender && emailData.sender.email) {
+            log(`Fallback check prepared with sender: ${emailData.sender.email} and timestamp near: ${emailData.timestamp}`, 'info');
+        }
+        
+        // Define API URL base - use the API from window.OpsieApi or fall back to direct Supabase URL
+        const apiBase = window.OpsieApi.API_BASE_URL || 'https://yourdomain.supabase.co/rest/v1';
+        
+        // Primary check with message external ID
+        if (messageId) {
+            const checkResponse = await fetch(`${apiBase}/messages?message_external_id=eq.${encodeURIComponent(messageId)}&team_id=eq.${teamId}&select=*`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': window.OpsieApi.SUPABASE_KEY,
+                    'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                }
+            });
+            
+            if (checkResponse.ok) {
+                const messages = await checkResponse.json();
+                
+                if (messages && messages.length > 0) {
+                    log('Found existing message by primary ID check', 'info', messages[0]);
+                    
+                    // Use the closest match
+                    const closestMessage = messages[0];
+                    log('Using closest timestamp match', 'info', {
+                        messageTimestamp: closestMessage.timestamp,
+                        searchTimestamp: emailData.timestamp,
+                        diffSeconds: Math.abs(new Date(closestMessage.timestamp) - new Date(emailData.timestamp)) / 1000
+                    });
+                    
+                    // Get summary and urgency data if available
+                    if (closestMessage.summary) {
+                        log('Found existing summary in database', 'info', closestMessage.summary);
+                    }
+                    
+                    if (closestMessage.urgency !== null && closestMessage.urgency !== undefined) {
+                        log('Found existing urgency score in database', 'info', closestMessage.urgency);
+                    }
+                    
+                    // Try to get user information for who saved this message
+                    let userInfo = null;
+                    
+                    if (closestMessage.user_id) {
+                        try {
+                            // Fetch user details from the users table
+                            const userResponse = await fetch(`${apiBase}/users?id=eq.${closestMessage.user_id}&select=first_name,last_name,email`, {
+                                method: 'GET',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'apikey': window.OpsieApi.SUPABASE_KEY,
+                                    'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                                }
+                            });
+                            
+                            if (userResponse.ok) {
+                                const users = await userResponse.json();
+                                
+                                if (users && users.length > 0) {
+                                    const userData = users[0];
+                                    let userName = 'Unknown User';
+                                    
+                                    if (userData.first_name || userData.last_name) {
+                                        userName = `${userData.first_name || ''} ${userData.last_name || ''}`.trim();
+                                    } else if (userData.email) {
+                                        userName = userData.email;
+                                    }
+                                    
+                                    userInfo = {
+                                        name: userName,
+                                        email: userData.email
+                                    };
+                                    
+                                    log('Retrieved user information for message (primary check)', 'info', userInfo);
+                                }
+                            }
+                        } catch (userLookupError) {
+                            log('Error retrieving user information', 'error', userLookupError);
+                        }
+                    }
+                    
+                    // After email is found, prepare the result object
+                    const result = {
+                        exists: true,
+                        message: closestMessage,
+                        foundBy: 'primary',
+                        user: userInfo || { name: 'Unknown User' },
+                        savedAt: closestMessage.created_at || closestMessage.timestamp
+                    };
+                    
+                    // Add summary and urgency to the result if available
+                    if (closestMessage.summary) {
+                        result.summary = closestMessage.summary;
+                    }
+                    
+                    if (closestMessage.urgency !== null && closestMessage.urgency !== undefined) {
+                        result.urgency = closestMessage.urgency;
+                    }
+                    
+                    // After email is found, display any existing summary and urgency
+                    if (closestMessage.summary) {
+                        // Display the summary in the UI
+                        displayExistingSummary(closestMessage.summary, closestMessage.urgency);
+                    }
+                    
+                    // Update currentEmailData with the existing message reference
+                    if (!currentEmailData.existingMessage) {
+                        currentEmailData.existingMessage = {};
+                    }
+                    
+                    currentEmailData.existingMessage = {
+                        ...currentEmailData.existingMessage,
+                        exists: true,
+                        message: closestMessage,
+                        user: userInfo,
+                        savedAt: closestMessage.created_at || closestMessage.timestamp,
+                        summary: closestMessage.summary,
+                        urgency: closestMessage.urgency
+                    };
+                    
+                    // Check for handling status
+                    if (closestMessage.handled_by || closestMessage.handled_at) {
+                        result.handling = {
+                            isHandled: true,
+                            handledAt: closestMessage.handled_at,
+                            handlingNote: closestMessage.handling_note
+                        };
+                        
+                        currentEmailData.existingMessage.handling = result.handling;
+                    }
+                    
+                    return result;
+                }
+            }
+        }
+        
+        // Secondary check by sender, timestamp, and optionally subject (less reliable)
+        if (emailData && emailData.sender && emailData.sender.email && emailData.timestamp) {
+            try {
+                // Standardize the timestamp to ISO format
+                let timestamp;
+                try {
+                    timestamp = new Date(emailData.timestamp).toISOString();
+                } catch (e) {
+                    log('Error converting timestamp for secondary check', 'error', e);
+                    timestamp = new Date().toISOString();
+                }
+                
+                // Construct a query with a 2-minute window (±2 minutes) around the timestamp
+                const twoMinutesBeforeTimestamp = new Date(new Date(timestamp).getTime() - 2 * 60 * 1000).toISOString();
+                const twoMinutesAfterTimestamp = new Date(new Date(timestamp).getTime() + 2 * 60 * 1000).toISOString();
+                
+                log('Checking with time window', 'info', {
+                    sender: emailData.sender.email,
+                    timestampOriginal: timestamp,
+                    timeWindow: `${twoMinutesBeforeTimestamp} to ${twoMinutesAfterTimestamp}`
+                });
+                
+                // Fetch messages with the specified sender and within the time window
+                const query = 
+                    `sender_email=eq.${encodeURIComponent(emailData.sender.email)}` +
+                    `&team_id=eq.${teamId}` +
+                    `&timestamp=gte.${twoMinutesBeforeTimestamp}` +
+                    `&timestamp=lte.${twoMinutesAfterTimestamp}` +
+                    `&select=*`;
+                
+                const timeWindowResponse = await fetch(
+                    `${apiBase}/messages?${query}`,
+                    {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'apikey': window.OpsieApi.SUPABASE_KEY,
+                            'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                        }
+                    }
+                );
+                
+                if (timeWindowResponse.ok) {
+                    const timeWindowMessages = await timeWindowResponse.json();
+                    
+                    if (timeWindowMessages && timeWindowMessages.length > 0) {
+                        log(`Found ${timeWindowMessages.length} messages matching sender and timestamp window`, 'info');
+                        
+                        // Sort messages by timestamp closest to the search timestamp
+                        timeWindowMessages.sort((a, b) => {
+                            const aDiff = Math.abs(new Date(a.timestamp) - new Date(timestamp));
+                            const bDiff = Math.abs(new Date(b.timestamp) - new Date(timestamp));
+                            return aDiff - bDiff;
+                        });
+                        
+                        // Use the closest match
+                        const closestMessage = timeWindowMessages[0];
+                        log('Using closest timestamp match', 'info', {
+                            messageTimestamp: closestMessage.timestamp,
+                            searchTimestamp: timestamp,
+                            diffSeconds: Math.abs(new Date(closestMessage.timestamp) - new Date(timestamp)) / 1000
+                        });
+                        
+                        // Try to get user information for who saved this message
+                        let userInfo = null;
+                        
+                        if (closestMessage.user_id) {
+                            try {
+                                // Fetch user details from the users table
+                                const userResponse = await fetch(`${apiBase}/users?id=eq.${closestMessage.user_id}&select=first_name,last_name,email`, {
+                                    method: 'GET',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'apikey': window.OpsieApi.SUPABASE_KEY,
+                                        'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                                    }
+                                });
+                                
+                                if (userResponse.ok) {
+                                    const users = await userResponse.json();
+                                    
+                                    if (users && users.length > 0) {
+                                        const userData = users[0];
+                                        let userName = 'Unknown User';
+                                        
+                                        if (userData.first_name || userData.last_name) {
+                                            userName = `${userData.first_name || ''} ${userData.last_name || ''}`.trim();
+                                        } else if (userData.email) {
+                                            userName = userData.email;
+                                        }
+                                        
+                                        userInfo = {
+                                            name: userName,
+                                            email: userData.email
+                                        };
+                                        
+                                        log('Retrieved user information for message (secondary check)', 'info', userInfo);
+                                    }
+                                }
+                            } catch (userError) {
+                                log('Error fetching user details for secondary check', 'error', userError);
+                            }
+                        }
+                        
+                        // Create result object
+                        const result = {
+                            exists: true,
+                            message: closestMessage,
+                            foundBy: 'secondary',
+                            savedAt: closestMessage.created_at,
+                            user: userInfo
+                        };
+                        
+                        // Add summary and urgency to the result if available
+                        if (closestMessage.summary) {
+                            result.summary = closestMessage.summary;
+                            log('Found existing summary in secondary match', 'info', closestMessage.summary);
+                        }
+                        
+                        if (closestMessage.urgency !== null && closestMessage.urgency !== undefined) {
+                            result.urgency = closestMessage.urgency;
+                            log('Found existing urgency in secondary match', 'info', closestMessage.urgency);
+                        }
+                        
+                        // After email is found, display any existing summary and urgency
+                        if (closestMessage.summary) {
+                            // Display the summary in the UI
+                            displayExistingSummary(closestMessage.summary, closestMessage.urgency);
+                        }
+                        
+                        // Check if the message has handling information
+                        if (closestMessage.handled_at || closestMessage.handled_by) {
+                            log('Message found by secondary check has handling information', 'info');
+                            
+                            let handlerInfo = null;
+                            
+                            // If we have a handled_by user ID, get user details
+                            if (closestMessage.handled_by) {
+                                try {
+                                    // Fetch user details from the users table
+                                    const handlerResponse = await fetch(`${apiBase}/users?id=eq.${closestMessage.handled_by}&select=first_name,last_name,email`, {
+                                        method: 'GET',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'apikey': window.OpsieApi.SUPABASE_KEY,
+                                            'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                                        }
+                                    });
+                                    
+                                    if (handlerResponse.ok) {
+                                        const users = await handlerResponse.json();
+                                        
+                                        if (users && users.length > 0) {
+                                            const userData = users[0];
+                                            let userName = 'Unknown User';
+                                            
+                                            if (userData.first_name || userData.last_name) {
+                                                userName = `${userData.first_name || ''} ${userData.last_name || ''}`.trim();
+                                            } else if (userData.email) {
+                                                userName = userData.email;
+                                            }
+                                            
+                                            handlerInfo = {
+                                                name: userName,
+                                                email: userData.email
+                                            };
+                                            
+                                            log('Retrieved handler information for secondary check', 'info', handlerInfo);
+                                        }
+                                    }
+                                } catch (handlerError) {
+                                    log('Error fetching handler details for secondary check', 'error', handlerError);
+                                }
+                            }
+                            
+                            // Add handling information to the result
+                            result.handling = {
+                                handledAt: closestMessage.handled_at,
+                                handledBy: handlerInfo || { name: 'Unknown User' },
+                                handlingNote: closestMessage.handling_note
+                            };
+                            
+                            log('Added handling info to result for secondary check', 'info', result.handling);
+                        }
+                        
+                        return result;
+                    } else {
+                        log('No matches found with timestamp window check', 'info');
+                    }
+                } else {
+                    log('API error in secondary check', 'warning', {
+                        status: timeWindowResponse.status,
+                        statusText: timeWindowResponse.statusText
+                    });
+                }
+            } catch (secondaryCheckError) {
+                log('Error during secondary message check', 'error', secondaryCheckError);
+            }
+        }
+        
+        // If we get here, email doesn't exist by either check
+        return { exists: false };
+    } catch (error) {
+        log('Exception checking if email exists', 'error', error);
+        return { exists: false };
+    }
+}
+
+// New function to display an existing summary from the database
+function displayExistingSummary(summaryText, urgencyScore) {
+    try {
+        // First, make sure the summary container is visible
+        const summaryContainer = document.getElementById('summary-container');
+        if (summaryContainer) {
+            summaryContainer.style.display = 'block';
+        }
+        
+        // Parse the summary text into an array of items
+        let summaryItems = [];
+        
+        // Check if it's stored as a pipe-separated string (common format)
+        if (typeof summaryText === 'string') {
+            if (summaryText.includes('|')) {
+                summaryItems = summaryText.split('|').map(item => item.trim());
+            } 
+            // Check if it might be stored as newlines
+            else if (summaryText.includes('\n')) {
+                summaryItems = summaryText.split('\n').map(item => item.trim());
+            }
+            // Default to treating it as a single item
+            else {
+                summaryItems = [summaryText];
+            }
+        } 
+        // If it's already an array, use it directly
+        else if (Array.isArray(summaryText)) {
+            summaryItems = summaryText;
+        }
+        
+        // Display the summary items
+        const summaryItemsElement = document.getElementById('summary-items');
+        if (summaryItemsElement && summaryItems.length > 0) {
+            summaryItemsElement.innerHTML = '';
+            
+            summaryItems.forEach(item => {
+                const li = document.createElement('li');
+                li.textContent = item;
+                summaryItemsElement.appendChild(li);
+            });
+            
+            log('Displayed existing summary from database', 'info', summaryItems);
+        }
+        
+        // Display urgency score if available
+        if (urgencyScore !== null && urgencyScore !== undefined) {
+            const urgencyFill = document.getElementById('urgency-fill');
+            if (urgencyFill) {
+                const score = parseFloat(urgencyScore);
+                const percentage = Math.min(Math.max((score / 10) * 100, 0), 100);
+                
+                // Update the fill width
+                urgencyFill.style.width = `${percentage}%`;
+                
+                // Set color based on urgency level
+                let color;
+                if (score <= 3) {
+                    color = '#4CAF50'; // Green for low urgency
+                } else if (score <= 7) {
+                    color = '#FFA500'; // Orange for medium urgency
+                } else {
+                    color = '#FF0000'; // Red for high urgency
+                }
+                
+                // Update the fill color
+                urgencyFill.style.backgroundColor = color;
+                
+                log('Displayed existing urgency from database', 'info', urgencyScore);
+            }
+        }
+    } catch (error) {
+        log('Error displaying existing summary', 'error', error);
+    }
+}
+
+// Update the UI to show an email has been saved
+function updateSavedStatus(messageData) {
+    try {
+        // Log the entire message data structure for debugging
+        log('Updating saved status with data', 'info', messageData);
+
+        // Update the saved status display
+        const savedStatusElement = document.getElementById('saved-status');
+        if (!savedStatusElement) {
+            log('Warning: saved-status element not found', 'warning');
+            return;
+        }
+
+        // Try to get user info - check all possible locations
+        let userName = 'Unknown user';
+        let userEmail = '';
+        
+        // Modern format (directly in checkResult object)
+        if (messageData.user && messageData.user.name) {
+            userName = messageData.user.name;
+            userEmail = messageData.user.email || '';
+            log('Found user info in root user property', 'info');
+        }
+        // Format from browser extension in message.user_id
+        else if (messageData.message && messageData.message.user) {
+            userName = messageData.message.user.name || 'Unknown user';
+            userEmail = messageData.message.user.email || '';
+            log('Found user info in message.user property', 'info');
+        }
+        // Legacy format
+        else if (messageData.user_details && messageData.user_details.name) {
+            userName = messageData.user_details.name;
+            userEmail = messageData.user_details.email || '';
+            log('Found user info in user_details property', 'info');
+        }
+        
+        // Format the saved date - check all possible locations
+        let savedDate = 'unknown date';
+        try {
+            // Check different possible locations for the timestamp
+            if (messageData.savedAt) {
+                savedDate = new Date(messageData.savedAt).toLocaleString();
+                log('Found timestamp in savedAt property', 'info');
+            }
+            else if (messageData.message && messageData.message.created_at) {
+                savedDate = new Date(messageData.message.created_at).toLocaleString();
+                log('Found timestamp in message.created_at property', 'info');
+            }
+            else if (messageData.created_at) {
+                savedDate = new Date(messageData.created_at).toLocaleString();
+                log('Found timestamp in created_at property', 'info');
+            }
+        } catch (e) {
+            log('Error formatting saved date', 'error', e);
+        }
+        
+        // How the email was found
+        let foundByText = '';
+        if (messageData.foundBy === 'secondary' || messageData.foundBySecondaryCheck) {
+            foundByText = ' (matched by sender and timestamp)';
+        }
+        
+        savedStatusElement.innerHTML = `<div class="saved-badge">✓ Saved</div>
+        <div class="saved-details">This email was saved to the database by ${userName} at ${savedDate}${foundByText}</div>`;
+        savedStatusElement.style.display = 'block';
+        
+        log('Updated saved status with user: ' + userName + ' and date: ' + savedDate);
+        
+        // Disable the save button to prevent saving again - match sidebar behavior
+        const saveButton = document.getElementById('save-email-button');
+        if (saveButton) {
+            saveButton.disabled = true;
+            saveButton.textContent = 'Already Saved';
+            saveButton.style.backgroundColor = '#999';
+            log('Disabled Save Email button (from updateSavedStatus)', 'info');
+        }
+        
+        // Update the Mark as Handled button to be enabled since the email is saved
+        const markHandledButton = document.getElementById('mark-handled-button');
+        if (markHandledButton) {
+            markHandledButton.disabled = false;
+            markHandledButton.textContent = 'Mark as Handled';
+            markHandledButton.style.backgroundColor = '#ff9800';
+        }
+        
+        // Show the notes section since the email is saved
+        const notesSection = document.getElementById('notes-section');
+        if (notesSection) {
+            notesSection.style.display = 'block';
+            
+            // Load notes for the current email
+            loadNotesForCurrentEmail();
+        }
+        
+        // Check if this message is already handled
+        if (messageData.handling || 
+            (messageData.message && messageData.message.handled_at) ||
+            (messageData.message && messageData.message.handled_by)) {
+            
+            log('Message is already handled, updating handling status display', 'info');
+            
+            // Create a handling object if it doesn't exist
+            if (!messageData.handling) {
+                messageData.handling = {};
+                
+                // Get the handled_at time
+                if (messageData.message && messageData.message.handled_at) {
+                    messageData.handling.handledAt = messageData.message.handled_at;
+                }
+                
+                // If we have a handled_by user ID, try to get the user details
+                if (messageData.message && messageData.message.handled_by) {
+                    messageData.handling.handledBy = { 
+                        name: 'Unknown User'
+                    };
+                    
+                    // Get the handling note if it exists
+                    if (messageData.message && messageData.message.handling_note) {
+                        messageData.handling.handlingNote = messageData.message.handling_note;
+                    }
+                }
+            }
+            
+            // Update the handling display
+            updateHandlingStatus(messageData);
+            
+            // Disable the Mark as Handled button
+            if (markHandledButton) {
+                markHandledButton.disabled = true;
+                markHandledButton.textContent = 'Already Handled';
+                markHandledButton.style.backgroundColor = '#999';
+            }
+        }
+    } catch (error) {
+        log('Error updating saved status', 'error', error);
+    }
+}
+
+// Update the email details section
+function updateEmailDetails() {
+    const item = Office.context.mailbox.item;
+    
+    if (!item) {
+        log('No email item available', 'error');
+        return;
+    }
+    
+    try {
+        // Get email data
+        const emailData = getEmailData();
+        
+        // Set the subject
+        const subjectElement = document.getElementById('email-subject');
+        if (subjectElement) {
+            subjectElement.textContent = emailData.subject || '(No subject)';
+        }
+        
+        // Set the sender
+        const fromElement = document.getElementById('email-from');
+        if (fromElement) {
+            fromElement.textContent = `${emailData.sender.name} <${emailData.sender.email}>`;
+        }
+        
+        // Set recipients (To)
+        const toElement = document.getElementById('email-to');
+        if (toElement && item.to) {
+            const recipients = item.to.map(recipient => 
+                recipient.displayName || recipient.emailAddress
+            ).join(', ');
+            toElement.textContent = recipients || '(No recipients)';
+        }
+        
+        // Set the preview
+        const previewElement = document.getElementById('email-body-preview');
+        if (previewElement) {
+            // Will be updated when body is loaded, for now show placeholder
+            previewElement.textContent = emailData.body 
+                ? emailData.body.substring(0, 100) + '...' 
+                : 'Loading message body...';
+        }
+        
+        log('Email details updated successfully');
+    } catch (error) {
+        log('Error updating email details: ' + error.message, 'error', error);
+        showErrorNotification('Error displaying email information');
+    }
+}
+
+// Get the email data needed for API calls
+function getEmailData() {
+    const item = Office.context.mailbox.item;
+    
+    if (!item) return null;
+    
+    // Create the email data object if it doesn't exist
+    if (!currentEmailData) {
+        currentEmailData = {
+            subject: item.subject || '',
+            sender: {
+                name: item.from ? item.from.displayName : '',
+                email: item.from ? item.from.emailAddress : ''
+            },
+            timestamp: item.dateTimeCreated ? new Date(item.dateTimeCreated).toISOString() : new Date().toISOString(),
+            body: '', // Will be populated by loadCurrentEmail
+            hasAttachments: item.attachments && item.attachments.length > 0,
+            messageId: null // Will be filled in below
+        };
+        
+        // Try to extract the ID using multiple methods
+        extractMessageId(item)
+            .then(id => {
+                if (id) {
+                    currentEmailData.messageId = id;
+                    log('Successfully extracted message ID asynchronously: ' + id, 'info');
+                }
+            })
+            .catch(error => {
+                log('Error extracting message ID asynchronously: ' + error.message, 'warning');
+            });
+        
+        // Meanwhile, try synchronous methods as fallback
+        
+        // Try to get the restId which is often the correct format we want
+        if (item.itemId && Office.context.mailbox.convertToRestId) {
+            try {
+                const restId = Office.context.mailbox.convertToRestId(item.itemId, Office.MailboxEnums.RestVersion.v2_0);
+                currentEmailData.messageId = restId;
+                log('Using REST ID: ' + currentEmailData.messageId, 'info');
+            } catch (e) {
+                log('Error converting to REST ID: ' + e.message, 'warning');
+            }
+        }
+        
+        // If still not found, try other properties
+        if (!currentEmailData.messageId) {
+            // Try the conversation ID which sometimes has the "AAkAL..." format
+            if (item.conversationId) {
+                currentEmailData.messageId = item.conversationId;
+                log('Using conversationId: ' + currentEmailData.messageId, 'info');
+            }
+            // Fall back to the item ID
+            else if (item.itemId) {
+                currentEmailData.messageId = item.itemId;
+                log('Using itemId as fallback: ' + currentEmailData.messageId, 'info');
+            }
+            // Try internet message ID as a last resort
+            else if (item.internetMessageId) {
+                currentEmailData.messageId = item.internetMessageId;
+                log('Using internetMessageId: ' + currentEmailData.messageId, 'info');
+            }
+            // Generate a synthetic ID if nothing else is available
+            else if (Office.context.mailbox.diagnostics && Office.context.mailbox.diagnostics.hostName) {
+                log('No standard ID properties found, generating alternative ID', 'warning');
+                
+                const alternativeId = [
+                    Office.context.mailbox.userProfile.emailAddress,
+                    Office.context.mailbox.diagnostics.hostName,
+                    item.dateTimeCreated,
+                    item.subject,
+                    item.from ? item.from.emailAddress : ''
+                ].join('::');
+                
+                currentEmailData.messageId = `generated-${btoa(alternativeId).replace(/=/g, '')}`;
+                log('Generated alternative message ID: ' + currentEmailData.messageId, 'info');
+            }
+        }
+        
+        // Clean and validate the message ID
+        if (currentEmailData.messageId) {
+            // Remove any prefix if present (sometimes it has "ID:" or similar prefix)
+            if (currentEmailData.messageId.includes(':')) {
+                currentEmailData.messageId = currentEmailData.messageId.split(':').pop().trim();
+                log('Extracted clean ID from prefixed format', 'info');
+            }
+            
+            // Look for the AAkAL format which is the URL ID format
+            const idMatch = currentEmailData.messageId.match(/AAkAL[A-Za-z0-9+/=%]+/);
+            if (idMatch) {
+                currentEmailData.messageId = idMatch[0];
+                log('Extracted URL format ID (AAkAL) from messageId', 'info');
+            }
+        } else {
+            log('No message ID could be extracted', 'warning');
+        }
+        
+        // Log the final message ID for debugging
+        log('Final message ID: ' + (currentEmailData.messageId || 'Not available'), 
+            currentEmailData.messageId ? 'info' : 'warning');
+    }
+    
+    return currentEmailData;
+}
+
+// Helper function to extract message ID asynchronously using various methods
+async function extractMessageId(item) {
+    // Try method 1: Get the ID via REST API (most reliable for getting the AAkAL format)
+    if (Office.context.mailbox.getCallbackTokenAsync) {
+        try {
+            log('Attempting to extract ID using REST API', 'info');
+            
+            // Get an access token for the REST API
+            const tokenResult = await new Promise((resolve, reject) => {
+                Office.context.mailbox.getCallbackTokenAsync({isRest: true}, result => {
+                    if (result.status === Office.AsyncResultStatus.Succeeded) {
+                        resolve(result.value);
+                    } else {
+                        reject(new Error('Failed to get callback token: ' + result.error.message));
+                    }
+                });
+            });
+            
+            const restHost = Office.context.mailbox.restUrl;
+            const apiUrl = restHost + '/v2.0/me/messages/' + item.itemId;
+            
+            log('Making REST API request to: ' + apiUrl, 'info');
+            
+            const response = await fetch(apiUrl, {
+                method: 'GET',
+                headers: {
+                    'Authorization': 'Bearer ' + tokenResult,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('REST API request failed: ' + response.status);
+            }
+            
+            const data = await response.json();
+            log('REST API response received', 'info', data);
+            
+            // Extract the ID from the response
+            if (data.id) {
+                log('Found ID in REST response: ' + data.id, 'info');
+                return data.id;
+            }
+        } catch (error) {
+            log('Error using REST API to get message ID: ' + error.message, 'warning');
+        }
+    }
+    
+    // Try method 2: Convert the EWS ID to a REST ID
+    if (item.itemId && Office.context.mailbox.convertToRestId) {
+        try {
+            const restId = Office.context.mailbox.convertToRestId(
+                item.itemId,
+                Office.MailboxEnums.RestVersion.v2_0
+            );
+            log('Converted EWS ID to REST ID: ' + restId, 'info');
+            return restId;
+        } catch (error) {
+            log('Error converting EWS ID to REST ID: ' + error.message, 'warning');
+        }
+    }
+    
+    // Try method 3: Look for the ID in the URL (if we're in a browser)
+    if (typeof window !== 'undefined' && window.location && window.location.href) {
+        const url = window.location.href;
+        log('Checking current URL for ID: ' + url, 'info');
+        
+        // Look for the AAkAL pattern in the URL
+        const urlIdMatch = url.match(/AAkAL[A-Za-z0-9+%/=]+/);
+        if (urlIdMatch) {
+            log('Found ID in URL: ' + urlIdMatch[0], 'info');
+            return urlIdMatch[0];
+        }
+    }
+    
+    // No ID found through these methods
+    return null;
+}
+
+// Add this function to better handle errors
+function handleApiError(error, context) {
+    console.error(`Error during ${context}:`, error);
+    
+    // Check for different error types
+    if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+        showErrorNotification('Network connection issue. Please check your internet connection and try again.');
+    } else if (error.message && error.message.includes('Authentication')) {
+        // Handle authentication errors
+        checkAuthStatus(); // Re-check auth status to show login screen if needed
+        showErrorNotification('Authentication error. Please log in again.');
+    } else {
+        // Generic error handling
+        showErrorNotification(error.message || `Error occurred while ${context}`);
+    }
+}
+
+// Handle generating summary
+async function handleGenerateSummary() {
+    try {
+        // Check if email data is available
+        if (!currentEmailData || !currentEmailData.body) {
+            showErrorNotification('No email data available to summarize');
+            return;
+        }
+        
+        // Show the summary container if it's hidden
+        const summaryContainer = document.getElementById('summary-container');
+        if (summaryContainer) {
+            summaryContainer.style.display = 'block';
+        }
+        
+        // Clear previous items
+        const summaryItems = document.getElementById('summary-items');
+        if (summaryItems) {
+            summaryItems.innerHTML = '<li>Generating summary...</li>';
+        }
+        
+        // Reset urgency meter
+        const urgencyFill = document.getElementById('urgency-fill');
+        if (urgencyFill) {
+            urgencyFill.style.width = '0%';
+            urgencyFill.style.backgroundColor = '#e0e0e0';
+        }
+        
+        log('Generating summary for email: ' + currentEmailData.subject);
+        
+        // Call the API to generate the summary
+        const summaryResult = await window.OpsieApi.generateEmailSummary(currentEmailData);
+        
+        log('Summary generated successfully', 'info', summaryResult);
+        
+        // Check if the missing API key message is in the summary
+        const missingApiKey = summaryResult.summaryItems && 
+                             summaryResult.summaryItems.some(item => 
+                                typeof item === 'string' && 
+                                item.includes('Please add your OpenAI API key in settings'));
+        
+        if (missingApiKey) {
+            log('Missing API key detected in summary result', 'warning');
+            showErrorNotification('OpenAI API key is required. Please add your API key in the settings panel.');
+            
+            // Automatically open settings panel to make it easier for the user
+            toggleSettings();
+            
+            return;
+        }
+        
+        // Store the summary and urgency in the currentEmailData object for saving
+        if (summaryResult.summaryItems && summaryResult.summaryItems.length > 0) {
+            // Join the summary items with a pipe to store as a single string
+            currentEmailData.summary = summaryResult.summaryItems.join(' | ');
+            log('Stored summary in currentEmailData:', 'info', currentEmailData.summary);
+        }
+        
+        if (summaryResult.urgencyScore !== undefined) {
+            currentEmailData.urgency = summaryResult.urgencyScore;
+            log('Stored urgency score in currentEmailData:', 'info', currentEmailData.urgency);
+        }
+        
+        // Display the summary items
+        if (summaryItems) {
+            summaryItems.innerHTML = '';
+            
+            // Check if summary items exist and handle different formats
+            if (summaryResult.summaryItems && summaryResult.summaryItems.length > 0) {
+                summaryResult.summaryItems.forEach(item => {
+                    const li = document.createElement('li');
+                    // Handle both string items and object items with content property
+                    li.textContent = typeof item === 'string' ? item : (item.content || '');
+                    summaryItems.appendChild(li);
+                });
+            } else {
+                summaryItems.innerHTML = '<li>No summary items returned. Please try again.</li>';
+            }
+        }
+        
+        // Display urgency score if available
+        if (urgencyFill) {
+            let score = 0;
+            
+            // Handle different formats of urgency in response
+            if (summaryResult.urgencyScore !== undefined) {
+                // Numeric score (0-10)
+                score = summaryResult.urgencyScore;
+            } else if (summaryResult.urgency) {
+                // Text-based urgency (low, medium, high)
+                switch(summaryResult.urgency.toLowerCase()) {
+                    case 'high':
+                        score = 9;
+                        break;
+                    case 'medium':
+                        score = 5;
+                        break;
+                    case 'low':
+                        score = 2;
+                        break;
+                    default:
+                        score = 0;
+                }
+            }
+            
+            const percentage = Math.min(Math.max((score / 10) * 100, 0), 100);
+            
+            // Update the fill width
+            urgencyFill.style.width = `${percentage}%`;
+            
+            // Set color based on urgency level
+            let color;
+            if (score <= 3) {
+                color = '#4CAF50'; // Green for low urgency
+            } else if (score <= 7) {
+                color = '#FFA500'; // Orange for medium urgency
+            } else {
+                color = '#FF0000'; // Red for high urgency
+            }
+            
+            // Update the fill color
+            urgencyFill.style.backgroundColor = color;
+        }
+        
+        // Check if the email is already saved in the database
+        if (currentEmailData.existingMessage && 
+            currentEmailData.existingMessage.exists && 
+            currentEmailData.existingMessage.message && 
+            currentEmailData.existingMessage.message.id) {
+            
+            // Email is already saved, update the summary in the database
+            log('Email is already saved, updating summary in database', 'info', {
+                messageId: currentEmailData.existingMessage.message.id,
+                summary: currentEmailData.summary,
+                urgency: currentEmailData.urgency
+            });
+            
+            try {
+                // Call the updateEmailSummary function to save the summary to the database
+                const updateResult = await window.OpsieApi.updateEmailSummary(
+                    currentEmailData.existingMessage.message.id,
+                    currentEmailData.summary,
+                    currentEmailData.urgency
+                );
+                
+                if (updateResult.success) {
+                    log('Summary updated in database successfully', 'info', updateResult);
+                    showNotification('Summary generated and saved to database', 'success');
+                    
+                    // Update the existingMessage with the latest data
+                    if (updateResult.data && updateResult.data.message) {
+                        currentEmailData.existingMessage.message = updateResult.data.message;
+                        currentEmailData.existingMessage.summary = currentEmailData.summary;
+                        currentEmailData.existingMessage.urgency = currentEmailData.urgency;
+                    }
+                } else {
+                    log('Error updating summary in database', 'error', updateResult.error);
+                    
+                    // Check if this is an API key missing error
+                    if (updateResult.error && updateResult.error.includes('API key is required')) {
+                        showErrorNotification('OpenAI API key is required. Please add your API key in the settings panel.');
+                        // Automatically open settings panel to make it easier for the user
+                        toggleSettings();
+                    } else {
+                        showErrorNotification('Error updating summary: ' + updateResult.error);
+                    }
+                }
+            } catch (updateError) {
+                log('Exception updating summary in database', 'error', updateError);
+                showErrorNotification('Error updating summary: ' + updateError.message);
+            }
+        } else {
+            // Email is not saved yet, show notification that summary will be included when saved
+            log('Email is not saved yet, summary will be included when saved', 'info');
+            showNotification('Summary generated. It will be saved with the email when you click "Save Email".', 'success');
+        }
+    } catch (error) {
+        handleApiError(error, 'generating summary');
+        
+        // Check if this is an API key missing error
+        if (error.message && error.message.includes('API key')) {
+            showErrorNotification('OpenAI API key is required. Please add your API key in the settings panel.');
+            // Automatically open settings panel to make it easier for the user
+            toggleSettings();
+        }
+        
+        // Clear loading state and show error in UI
+        const summaryItems = document.getElementById('summary-items');
+        if (summaryItems) {
+            summaryItems.innerHTML = '<li>Error generating summary. Please try again.</li>';
+        }
+    }
+}
+
+// Handle getting contact summary
+async function handleGetContact() {
+    try {
+        // Check if email data is available
+        if (!currentEmailData || !currentEmailData.sender || !currentEmailData.sender.email) {
+            showErrorNotification('No contact information available');
+            return;
+        }
+        
+        // Show the contact container if it's hidden
+        const contactContainer = document.getElementById('contact-container');
+        if (contactContainer) {
+            contactContainer.style.display = 'block';
+        }
+        
+        // Clear previous items
+        const contactItems = document.getElementById('contact-items');
+        if (contactItems) {
+            contactItems.innerHTML = '<li>Retrieving contact history...</li>';
+        }
+        
+        log('Getting contact history for: ' + currentEmailData.sender.email);
+        
+        // Call the API to get contact history
+        const contactResult = await window.OpsieApi.generateContactHistory(currentEmailData.sender.email);
+        
+        log('Contact history retrieved successfully', 'info', contactResult);
+        
+        // Display the contact items
+        if (contactItems) {
+            contactItems.innerHTML = '';
+            
+            // Add message count if available
+            if (contactResult.messageCount) {
+                const countItem = document.createElement('li');
+                countItem.style.fontWeight = 'bold';
+                countItem.textContent = `Found ${contactResult.messageCount} previous emails with this contact`;
+                contactItems.appendChild(countItem);
+            }
+            
+            // Add each summary item
+            if (contactResult.summaryItems && contactResult.summaryItems.length > 0) {
+                contactResult.summaryItems.forEach(item => {
+                    const li = document.createElement('li');
+                    // Handle both string items and object items with content property
+                    li.textContent = typeof item === 'string' ? item : (item.content || '');
+                    contactItems.appendChild(li);
+                });
+            } else {
+                contactItems.innerHTML = '<li>No previous contact history found for this sender</li>';
+            }
+        }
+        
+        // Show success notification
+        showNotification('Contact history retrieved successfully', 'success');
+    } catch (error) {
+        handleApiError(error, 'retrieving contact history');
+        
+        // Clear loading state and show error in UI
+        const contactItems = document.getElementById('contact-items');
+        if (contactItems) {
+            contactItems.innerHTML = '<li>Error retrieving contact history. Please try again.</li>';
+        }
+    }
+}
+
+/**
+ * Handle search button click
+ */
+async function handleSearch() {
+    try {
+        // Get the search query
+        const searchInput = document.getElementById('email-search-input');
+        const query = searchInput.value.trim();
+        
+        if (!query) {
+            showErrorNotification('Please enter a search query');
+            return;
+        }
+        
+        // Set loading state
+        setLoading('search', true);
+        
+        // Show the search results container
+        const searchResultsContainer = document.querySelector('.search-results-container');
+        if (searchResultsContainer) {
+            searchResultsContainer.style.display = 'block';
+        }
+        
+        // Show a placeholder while searching
+        const searchAnswerContainer = document.querySelector('.search-answer');
+        if (searchAnswerContainer) {
+            searchAnswerContainer.textContent = 'Searching...';
+        }
+        
+        // Clear previous references
+        const searchReferencesContainer = document.querySelector('.search-references');
+        if (searchReferencesContainer) {
+            searchReferencesContainer.innerHTML = '';
+        }
+        
+        // Get current email data if available, but don't require it
+        let emailData = {};
+        try {
+            emailData = await getEmailData();
+        } catch (emailError) {
+            log('Warning: Could not retrieve current email data', 'warn', emailError);
+        }
+        
+        // Get sender's email (from current email or manual entry)
+        let senderEmail;
+        
+        // Try to get sender email from email data
+        if (emailData && emailData.sender && emailData.sender.email) {
+            senderEmail = emailData.sender.email;
+        }
+        
+        // If no sender email, check if we have a manually selected contact
+        if (!senderEmail) {
+            const contactSelect = document.getElementById('contact-select');
+            if (contactSelect && contactSelect.value) {
+                senderEmail = contactSelect.value;
+            }
+        }
+        
+        // If still no sender email, show error
+        if (!senderEmail) {
+            setLoading('search', false);
+            showErrorNotification('No sender email available to search');
+            
+            if (searchAnswerContainer) {
+                searchAnswerContainer.textContent = 'Error: No sender email available for searching';
+            }
+            return;
+        }
+        
+        log('Searching for query:', 'info', query + ' in emails from: ' + senderEmail);
+        
+        // Search the emails history
+        const result = await window.OpsieApi.searchEmailHistory(senderEmail, query);
+        
+        if (!result.success) {
+            setLoading('search', false);
+            showErrorNotification(result.error || 'Failed to search emails');
+            
+            if (searchAnswerContainer) {
+                searchAnswerContainer.textContent = 'Error: ' + (result.error || 'Failed to search emails');
+            }
+            return;
+        }
+        
+        // Show the results
+        const { answer, references } = result.data;
+        
+        if (searchAnswerContainer) {
+            searchAnswerContainer.textContent = answer || 'No answer found';
+        }
+        
+        // Clear and update references
+        if (searchReferencesContainer) {
+            searchReferencesContainer.innerHTML = '';
+            
+            if (references && references.length > 0) {
+                // Create reference items
+                references.forEach((ref, index) => {
+                    const referenceItem = document.createElement('div');
+                    referenceItem.className = 'reference-item';
+                    
+                    const quoteDiv = document.createElement('div');
+                    quoteDiv.className = 'reference-quote';
+                    quoteDiv.textContent = `${index + 1}. "${ref.quote}"`;
+                    
+                    const metaDiv = document.createElement('div');
+                    metaDiv.className = 'reference-meta';
+                    metaDiv.textContent = ref.meta;
+                    
+                    referenceItem.appendChild(quoteDiv);
+                    referenceItem.appendChild(metaDiv);
+                    searchReferencesContainer.appendChild(referenceItem);
+                });
+            } else {
+                // No references found
+                const noReferences = document.createElement('div');
+                noReferences.className = 'no-references';
+                noReferences.textContent = 'No specific references found for this query';
+                searchReferencesContainer.appendChild(noReferences);
+            }
+        }
+    } catch (error) {
+        log('Error in handle search:', 'error', error);
+        showErrorNotification(error.message || 'Failed to search emails');
+        
+        const searchAnswerContainer = document.querySelector('.search-answer');
+        if (searchAnswerContainer) {
+            searchAnswerContainer.textContent = 'Error: ' + (error.message || 'An unexpected error occurred');
+        }
+    } finally {
+        setLoading('search', false);
+    }
+}
+
+// Handle generating reply
+async function handleGenerateReply() {
+    try {
+        // Check if email data is available
+        if (!currentEmailData || !currentEmailData.body) {
+            showErrorNotification('No email data available to generate reply');
+            return;
+        }
+        
+        // Get the reply options
+        const options = {
+            tone: document.getElementById('reply-tone').value,
+            length: document.getElementById('reply-length').value,
+            language: document.getElementById('reply-language').value,
+            additionalContext: document.getElementById('reply-additional-context').value.trim()
+        };
+        
+        log(`Generating reply with options: ${JSON.stringify(options)}`);
+        
+        // Call the API to generate the reply
+        const replyResult = await window.OpsieApi.generateReplySuggestion(currentEmailData, options);
+        
+        log('Reply generated successfully', 'info', replyResult);
+        
+        // Display the reply
+        const replyContainer = document.getElementById('reply-container');
+        const replyPreview = document.getElementById('reply-preview');
+        
+        if (replyContainer && replyPreview && replyResult.replyText) {
+            // Show the reply container
+            replyContainer.style.display = 'block';
+            
+            // Set the reply text
+            replyPreview.textContent = replyResult.replyText;
+            
+            // Scroll to the reply
+            replyContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // Show success notification
+        showNotification('Reply generated successfully!', 'success');
+    } catch (error) {
+        handleApiError(error, 'generating reply');
+    }
+}
+
+// Handle saving email
+async function handleSaveEmail() {
+    try {
+        // Check if email data is available
+        if (!currentEmailData || !currentEmailData.body) {
+            showErrorNotification('No email data available to save');
+            return;
+        }
+        
+        // Check if the email is already saved
+        if (currentEmailData.existingMessage && currentEmailData.existingMessage.exists) {
+            log('Email is already saved in the database', 'info', currentEmailData.existingMessage);
+            
+            // Disable the save button visually to match sidebar behavior
+            const saveButton = document.getElementById('save-email-button');
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.textContent = 'Already Saved';
+                saveButton.style.backgroundColor = '#999';
+                log('Disabled Save Email button (already exists check)', 'info');
+            }
+            
+            // Show informational notification
+            showNotification('This email was already saved in the database', 'info');
+            return;
+        }
+        
+        setLoading('save', true);
+        
+        log('Saving email to database: ' + currentEmailData.subject);
+        
+        // Check if we have a message ID
+        if (!currentEmailData.messageId) {
+            log('No message ID available for this email', 'warning');
+            // We'll continue anyway and let the backend generate an ID
+        } else {
+            log('Using message ID for save: ' + currentEmailData.messageId, 'info');
+        }
+        
+        // Call the API to save the email
+        const saveResult = await window.OpsieApi.saveEmail(currentEmailData);
+        
+        log('Save email result:', 'info', saveResult);
+        
+        if (saveResult.success) {
+            // For both new saves and "already exists" cases, update the button consistently
+            // to match sidebar behavior
+            const saveButton = document.getElementById('save-email-button');
+            if (saveButton) {
+                // Force the button to be enabled first to ensure the disabled state change is applied
+                saveButton.disabled = false;
+                // Apply the disabled state after a short delay to ensure the DOM updates
+                setTimeout(() => {
+                    saveButton.disabled = true;
+                    saveButton.textContent = 'Already Saved';
+                    saveButton.style.backgroundColor = '#999';
+                    log('Disabled Save Email button after successful save', 'info');
+                }, 0);
+            } else {
+                log('Warning: save-email-button element not found when trying to disable', 'warning');
+            }
+            
+            // If the message was already in the database
+            if (saveResult.message && saveResult.message.includes('already exists')) {
+                showNotification('This email was already saved in the database', 'info');
+            } else {
+                showNotification('Email saved successfully!', 'success');
+            }
+            
+            // Update the message details section to show it's been saved
+            const savedStatusElement = document.getElementById('saved-status');
+            if (savedStatusElement) {
+                const timestamp = new Date().toLocaleString();
+                
+                // Try to get user info from localStorage
+                const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+                const firstName = userData.first_name || localStorage.getItem('firstName') || '';
+                const lastName = userData.last_name || localStorage.getItem('lastName') || '';
+                const userName = firstName || lastName ? `${firstName} ${lastName}`.trim() : 'you';
+                
+                savedStatusElement.innerHTML = `<div class="saved-badge">✓ Saved</div>
+                <div class="saved-details">This email was saved to the database by ${userName} at ${timestamp}</div>`;
+                savedStatusElement.style.display = 'block';
+            }
+            
+            // If we have a message object in the response, store it
+            if (saveResult.data && saveResult.data.message) {
+                // Store the message data for future reference
+                if (!currentEmailData.existingMessage) {
+                    currentEmailData.existingMessage = {};
+                }
+                currentEmailData.existingMessage.exists = true;
+                currentEmailData.existingMessage.message = saveResult.data.message;
+                currentEmailData.existingMessage.savedAt = new Date().toISOString();
+                currentEmailData.existingMessage.foundBy = 'primary'; // Save was done with primary ID
+                
+                log('Stored saved message reference', 'info', currentEmailData.existingMessage);
+                
+                // Show the notes section now that the email is saved
+                document.getElementById('notes-section').style.display = 'block';
+                
+                // Initialize the notes section
+                loadNotesForCurrentEmail();
+                
+                // Update the notes UI state
+                updateNotesUIState();
+                
+                // Enable the "Mark as Handled" button now that the email is saved
+                const markHandledButton = document.getElementById('mark-handled-button');
+                if (markHandledButton) {
+                    markHandledButton.disabled = false;
+                    markHandledButton.textContent = 'Mark as Handled';
+                    markHandledButton.style.backgroundColor = '#ff9800';
+                    log('Enabled Mark as Handled button after save', 'info');
+                } else {
+                    log('Warning: mark-handled-button element not found', 'warning');
+                }
+            }
+        } else {
+            // Failed to save
+            showErrorNotification('Failed to save email: ' + (saveResult.error || 'Unknown error'));
+            
+            // Reset the save button
+            const saveButton = document.getElementById('save-email-button');
+            if (saveButton) {
+                saveButton.disabled = false;
+                saveButton.textContent = 'Save Email';
+                saveButton.style.backgroundColor = '#4CAF50';
+                log('Reset Save Email button after failed save', 'info');
+            }
+        }
+    } catch (error) {
+        handleApiError(error, 'saving email');
+        
+        // Reset the save button
+        const saveButton = document.getElementById('save-email-button');
+        if (saveButton) {
+            saveButton.disabled = false;
+            saveButton.textContent = 'Save Email';
+            saveButton.style.backgroundColor = '#4CAF50';
+            log('Reset Save Email button after save error', 'info');
+        }
+    } finally {
+        setLoading('save', false);
+    }
+}
+
+// Handle copying reply to clipboard
+function handleCopyReply() {
+    try {
+        const replyPreview = document.getElementById('reply-preview');
+        if (!replyPreview || !replyPreview.textContent) {
+            showErrorNotification('No reply text to copy');
+            return;
+        }
+        
+        // Copy the text to clipboard
+        navigator.clipboard.writeText(replyPreview.textContent)
+            .then(() => {
+                // Show success notification
+                showNotification('Reply copied to clipboard!', 'success');
+                
+                // Visual feedback on the button
+                const copyButton = document.getElementById('copy-reply-button');
+                if (copyButton) {
+                    const originalText = copyButton.textContent;
+                    copyButton.textContent = '✓ Copied!';
+                    copyButton.style.backgroundColor = '#4CAF50';
+                    setTimeout(() => {
+                        copyButton.textContent = originalText;
+                        copyButton.style.backgroundColor = '';
+                    }, 2000);
+                }
+            })
+            .catch(error => {
+                console.error('Could not copy text: ', error);
+                showErrorNotification('Failed to copy reply. Please select and copy manually.');
+            });
+    } catch (error) {
+        console.error('Error copying reply:', error);
+        showErrorNotification('Error copying to clipboard. Please try again.');
+    }
+}
+
+// Handle inserting reply into email
+function handleInsertReply() {
+    try {
+        const replyPreview = document.getElementById('reply-preview');
+        if (!replyPreview || !replyPreview.textContent) {
+            showErrorNotification('No reply text to insert');
+            return;
+        }
+        
+        // Get the reply text
+        const replyText = replyPreview.textContent;
+        
+        // Insert into the email
+        Office.context.mailbox.item.body.setSelectedDataAsync(
+            replyText,
+            { coercionType: Office.CoercionType.Text },
+            result => {
+                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                    showNotification('Reply inserted successfully!', 'success');
+                } else {
+                    console.error('Error inserting reply:', result.error);
+                    showErrorNotification('Could not insert reply: ' + result.error.message);
+                }
+            }
+        );
+    } catch (error) {
+        console.error('Error inserting reply:', error);
+        showErrorNotification('Error inserting reply. Please try copying and pasting instead.');
+    }
+}
+
+// Get the email body as text
+function getEmailBody() {
+    return new Promise((resolve, reject) => {
+        Office.context.mailbox.item.body.getAsync(
+            Office.CoercionType.Text,
+            function (result) {
+                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                    resolve(result.value);
+                } else {
+                    console.error('Error getting email body:', result.error);
+                    reject(new Error('Failed to get email body'));
+                }
+            }
+        );
+    });
+}
+
+// Show error notification
+function showErrorNotification(message) {
+    showNotification(message, 'error');
+}
+
+/**
+ * Shows a notification to the user
+ * @param {string} message - The notification message
+ * @param {string} type - The notification type (success, error, warning, info)
+ */
+function showNotification(message, type = 'info') {
+    try {
+        if (window.OpsieApi && window.OpsieApi.showNotification) {
+            window.OpsieApi.showNotification(message, type);
+        } else {
+            log('Unable to show notification - OpsieApi.showNotification not available', 'warning');
+            console.log(`NOTIFICATION (${type}): ${message}`);
+        }
+    } catch (error) {
+        log('Error showing notification', 'error', error);
+    }
+}
+
+// Add a window error handler to catch unhandled exceptions
+window.onerror = function(message, source, lineno, colno, error) {
+    console.error('Unhandled error:', error || message);
+    showErrorNotification('An unexpected error occurred. Please try again later.');
+    return true; // Prevents default error handling
+};
+
+// Add a function to check if Office.js is properly loaded
+function checkOfficeAvailability() {
+    if (typeof Office === 'undefined' || !Office.context || !Office.context.mailbox) {
+        showErrorNotification('Office API is not available. Please reload the add-in.');
+        return false;
+    }
+    return true;
+}
+
+// Add a function to retry failed operations
+function retryOperation(operation, maxRetries = 3, delay = 1000) {
+    return new Promise((resolve, reject) => {
+        let attempts = 0;
+        
+        const attempt = () => {
+            attempts++;
+            operation()
+                .then(resolve)
+                .catch(error => {
+                    if (attempts < maxRetries) {
+                        console.log(`Retry attempt ${attempts} after error:`, error);
+                        setTimeout(attempt, delay);
+                    } else {
+                        reject(error);
+                    }
+                });
+        };
+        
+        attempt();
+    });
+}
+
+// Add a heartbeat function to periodically check authentication status
+function startAuthHeartbeat(interval = 300000) { // 5 minutes
+    setInterval(async () => {
+        try {
+            await checkAuthStatus();
+        } catch (error) {
+            console.error('Auth heartbeat error:', error);
+        }
+    }, interval);
+}
+
+// Show the handling modal
+function showHandlingModal() {
+    const modal = document.getElementById('handling-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+        
+        // Focus the textarea
+        setTimeout(() => {
+            const textarea = document.getElementById('handling-note');
+            if (textarea) {
+                textarea.focus();
+            }
+        }, 100);
+    }
+}
+
+// Hide the handling modal
+function hideHandlingModal() {
+    const modal = document.getElementById('handling-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        
+        // Clear the textarea
+        const textarea = document.getElementById('handling-note');
+        if (textarea) {
+            textarea.value = '';
+        }
+    }
+}
+
+// Mark the current email as handled
+async function markEmailAsHandled(note) {
+    if (!currentEmailData || !currentEmailData.existingMessage || !currentEmailData.existingMessage.message) {
+        showNotification('Please save the email first before marking it as handled', 'error');
+        return;
+    }
+    
+    try {
+        // Get the internal message ID - either directly or from a secondary search match
+        const messageId = currentEmailData.existingMessage.message.id;
+        const foundBy = currentEmailData.existingMessage.foundBy || 'primary';
+        
+        log('Marking email as handled', 'info', { 
+            messageId: messageId, 
+            foundBy: foundBy,
+            hasNote: !!note
+        });
+        
+        // Get the user ID from localStorage
+        const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+        const userId = userData.id || localStorage.getItem('userId');
+        if (!userId) {
+            showNotification('User ID not found. Please log in again.', 'error');
+            return;
+        }
+        
+        // Show loading indicator
+        setLoading('handle', true);
+        
+        // Get the API base URL
+        const apiBase = window.OpsieApi.API_BASE_URL || 'https://vewnmfmnvumupdrcraay.supabase.co/rest/v1';
+        
+        // Fetch current user details from server to ensure we have accurate information
+        let userInfo = null;
+        try {
+            const userResponse = await fetch(`${apiBase}/users?id=eq.${userId}&select=first_name,last_name,email`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': window.OpsieApi.SUPABASE_KEY,
+                    'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+                }
+            });
+            
+            if (userResponse.ok) {
+                const users = await userResponse.json();
+                if (users && users.length > 0) {
+                    const userData = users[0];
+                    let userName = 'Unknown User';
+                    
+                    if (userData.first_name || userData.last_name) {
+                        userName = `${userData.first_name || ''} ${userData.last_name || ''}`.trim();
+                    } else if (userData.email) {
+                        userName = userData.email;
+                    }
+                    
+                    userInfo = {
+                        name: userName,
+                        email: userData.email
+                    };
+                    
+                    log('Retrieved user information for handling', 'info', userInfo);
+                }
+            } else {
+                log('Failed to fetch user details', 'warning', {
+                    status: userResponse.status,
+                    statusText: userResponse.statusText
+                });
+            }
+        } catch (userError) {
+            log('Error fetching user details for handling', 'error', userError);
+        }
+        
+        // If we couldn't get user details from server, fall back to localStorage
+        if (!userInfo) {
+            const firstName = localStorage.getItem('firstName') || userData.first_name;
+            const lastName = localStorage.getItem('lastName') || userData.last_name;
+            const userEmail = localStorage.getItem('userEmail') || userData.email;
+            
+            let userName = 'Unknown User';
+            if (firstName || lastName) {
+                userName = `${firstName || ''} ${lastName || ''}`.trim();
+            } else if (userEmail) {
+                userName = userEmail;
+            }
+            
+            userInfo = {
+                name: userName,
+                email: userEmail
+            };
+            
+            log('Using localStorage data for user information', 'info', userInfo);
+        }
+        
+        // Send the request to mark the message as handled
+        log('Sending PATCH request to mark message as handled', 'info', {
+            endpoint: `${apiBase}/messages?id=eq.${messageId}`,
+            requestBody: {
+                handled_at: new Date().toISOString(),
+                handled_by: userId,
+                handling_note: note || null
+            }
+        });
+        
+        const handleResponse = await fetch(`${apiBase}/messages?id=eq.${messageId}`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'apikey': window.OpsieApi.SUPABASE_KEY,
+                'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
+            },
+            body: JSON.stringify({
+                handled_at: new Date().toISOString(),
+                handled_by: userId,
+                handling_note: note || null
+                // Removed is_handled: true as this column doesn't exist in the database
+            })
+        });
+        
+        // Log the response details
+        log('PATCH response received', 'info', {
+            status: handleResponse.status,
+            statusText: handleResponse.statusText,
+            ok: handleResponse.ok,
+            headers: Array.from(handleResponse.headers.entries())
+        });
+        
+        if (!handleResponse.ok) {
+            const responseText = await handleResponse.text();
+            log('Error response body', 'error', responseText);
+            throw new Error(`Error marking message as handled: ${handleResponse.status} ${handleResponse.statusText}`);
+        }
+        
+        // Update the UI to show that the message has been handled
+        log('Email marked as handled successfully', 'info');
+        
+        // Update handling status in the data model
+        if (!currentEmailData.existingMessage.handling) {
+            currentEmailData.existingMessage.handling = {};
+        }
+        
+        currentEmailData.existingMessage.handling = {
+            handledAt: new Date().toISOString(),
+            handledBy: userInfo,
+            handlingNote: note || null
+        };
+        
+        // Update the handling status display
+        updateHandlingStatus(currentEmailData.existingMessage);
+        
+        // Disable the Mark as Handled button
+        const markHandledButton = document.getElementById('mark-handled-button');
+        if (markHandledButton) {
+            markHandledButton.disabled = true;
+            markHandledButton.textContent = 'Already Handled';
+            markHandledButton.style.backgroundColor = '#999';
+        }
+        
+        // If there's a handling note, add it as a regular note too
+        if (note && note.trim()) {
+            try {
+                log('Adding handling note as a regular note', 'info');
+                
+                // Use the API service function to add the note
+                const noteResult = await window.OpsieApi.addNoteToMessage(
+                    messageId,
+                    userId,
+                    note,
+                    'Handled'
+                );
+                
+                if (noteResult.success) {
+                    log('Handling note added as regular note successfully', 'info');
+                } else {
+                    log('Failed to add handling note as regular note', 'warning', noteResult.error);
+                }
+            } catch (noteError) {
+                log('Error adding handling note as regular note', 'error', noteError);
+            }
+        }
+        
+        // Ensure notes section is visible
+        document.getElementById('notes-section').style.display = 'block';
+        
+        // Reload notes to include the new handling note
+        await loadNotesForCurrentEmail();
+        
+        // Get the latest notes (now including the handling note)
+        showNotification('Email marked as handled successfully', 'success');
+    } catch (error) {
+        log('Error marking email as handled', 'error', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    } finally {
+        setLoading('handle', false);
+        hideHandlingModal();
+    }
+}
+
+// Update the handling status display
+function updateHandlingStatus(messageData) {
+    try {
+        // Get the handling status element
+        const handlingStatusElement = document.getElementById('handling-status');
+        if (!handlingStatusElement) {
+            log('Warning: handling-status element not found', 'warning');
+            return;
+        }
+        
+        // Log the message data for debugging
+        log('Updating handling status with data', 'info', messageData);
+        
+        // Check if handling information exists
+        if (!messageData || !messageData.handling) {
+            log('No handling information available', 'info');
+            handlingStatusElement.style.display = 'none';
+            return;
+        }
+        
+        // Get the handled by info element
+        const handledByInfoElement = document.getElementById('handled-by-info');
+        if (!handledByInfoElement) {
+            log('Warning: handled-by-info element not found', 'warning');
+            return;
+        }
+        
+        // Get the handling note display element
+        const handlingNoteDisplayElement = document.getElementById('handling-note-display');
+        if (!handlingNoteDisplayElement) {
+            log('Warning: handling-note-display element not found', 'warning');
+            return;
+        }
+        
+        // Format the handled date
+        let handledDate = 'unknown date';
+        try {
+            if (messageData.handling.handledAt) {
+                handledDate = new Date(messageData.handling.handledAt).toLocaleString();
+                log('Handling date formatted successfully: ' + handledDate, 'info');
+            } else if (messageData.message && messageData.message.handled_at) {
+                handledDate = new Date(messageData.message.handled_at).toLocaleString();
+                log('Handling date from message.handled_at: ' + handledDate, 'info');
+            }
+        } catch (e) {
+            log('Error formatting handled date: ' + e.message, 'error', e);
+        }
+        
+        // Get who handled it - check multiple possible locations for this information
+        let handledByName = 'Unknown user';
+        let userInfo = null;
+        
+        // First try the modern format in the handling property
+        if (messageData.handling.handledBy) {
+            userInfo = messageData.handling.handledBy;
+            if (userInfo.name) {
+                handledByName = userInfo.name;
+                log('Found handler name in handling.handledBy.name: ' + handledByName, 'info');
+            } else if (userInfo.email) {
+                handledByName = userInfo.email;
+                log('Using email as handler name: ' + handledByName, 'info');
+            }
+        }
+        // Try legacy format if modern format doesn't have a name
+        else if (messageData.handling.handledByName) {
+            handledByName = messageData.handling.handledByName;
+            log('Found handler name in handling.handledByName: ' + handledByName, 'info');
+        }
+        // If we still don't have a name and we have a user_id, try to get user details
+        else if (messageData.message && messageData.message.handled_by) {
+            const userId = messageData.message.handled_by;
+            log('Found user ID in message.handled_by: ' + userId, 'info');
+            
+            // We could optionally fetch user details from the server here,
+            // but for now we'll just log that we found a user ID
+            handledByName = `User ${userId}`;
+        }
+        
+        log('Final handler name: ' + handledByName, 'info');
+        
+        // Update the handled by info
+        handledByInfoElement.textContent = `Marked as handled by ${handledByName} at ${handledDate}`;
+        
+        // Update the handling note display if a note exists
+        const handlingNote = messageData.handling.handlingNote || 
+                           (messageData.message && messageData.message.handling_note);
+                           
+        if (handlingNote) {
+            handlingNoteDisplayElement.textContent = `Note: "${handlingNote}"`;
+            handlingNoteDisplayElement.style.display = 'block';
+            log('Displaying handling note: ' + handlingNote, 'info');
+        } else {
+            handlingNoteDisplayElement.style.display = 'none';
+            log('No handling note to display', 'info');
+        }
+        
+        // Display the handling status
+        handlingStatusElement.style.display = 'block';
+        
+        log('Updated handling status display successfully', 'info');
+    } catch (error) {
+        log('Error updating handling status display', 'error', error);
+    }
+}
+
+// Function to set loading state for different sections
+function setLoading(section, isLoading) {
+    try {
+        const saveButton = document.getElementById('save-email-button');
+        const handleButton = document.getElementById('mark-handled-button');
+        const addNoteButton = document.getElementById('add-note-button');
+        
+        // Actions specific to notes, save, and handle buttons
+        if (section === 'save') {
+            if (saveButton) {
+                saveButton.disabled = isLoading;
+                saveButton.textContent = isLoading ? 'Saving...' : 'Save Email';
+            }
+            
+            const saveLoading = document.getElementById('save-loading');
+            if (saveLoading) {
+                saveLoading.style.display = isLoading ? 'flex' : 'none';
+            }
+        } else if (section === 'handle') {
+            // Check if email is already handled before updating button state
+            const isAlreadyHandled = currentEmailData && 
+                                    currentEmailData.existingMessage && 
+                                    currentEmailData.existingMessage.handling;
+                                    
+            if (handleButton) {
+                // Only update the button if the email is not already handled
+                // or if we're currently in a loading state
+                if (isLoading || !isAlreadyHandled) {
+                    handleButton.disabled = isLoading;
+                    handleButton.textContent = isLoading ? 'Processing...' : 'Mark as Handled';
+                    
+                    // Reset the background color only if not already handled
+                    if (!isLoading && !isAlreadyHandled) {
+                        handleButton.style.backgroundColor = '#ff9800'; // Original color
+                    }
+                }
+                
+                // If loading is complete and the email is already handled,
+                // ensure the button stays in the "handled" state
+                if (!isLoading && isAlreadyHandled) {
+                    handleButton.disabled = true;
+                    handleButton.textContent = 'Already Handled';
+                    handleButton.style.backgroundColor = '#999';
+                }
+            }
+        } else if (section === 'notes') {
+            if (addNoteButton) {
+                addNoteButton.disabled = isLoading;
+                addNoteButton.textContent = isLoading ? 'Adding...' : 'Add Note';
+            }
+        } else if (section === null) {
+            // Global loading
+            if (saveButton) {
+                saveButton.disabled = isLoading;
+                saveButton.textContent = isLoading ? 'Processing...' : 'Save Email';
+            }
+            
+            // For the handle button, check if it's already handled
+            if (handleButton) {
+                const isAlreadyHandled = currentEmailData && 
+                                        currentEmailData.existingMessage && 
+                                        currentEmailData.existingMessage.handling;
+                
+                if (!isAlreadyHandled) {
+                    handleButton.disabled = isLoading;
+                    handleButton.textContent = isLoading ? 'Processing...' : 'Mark as Handled';
+                }
+            }
+            
+            if (addNoteButton) {
+                addNoteButton.disabled = isLoading;
+                addNoteButton.textContent = isLoading ? 'Processing...' : 'Add Note';
+            }
+        } else {
+            // Other specific UI elements
+            switch (section) {
+                case 'summary':
+                    const summaryLoading = document.getElementById('summary-loading');
+                    const summaryButton = document.getElementById('generate-summary-button');
+                    
+                    if (summaryLoading) {
+                        summaryLoading.style.display = isLoading ? 'flex' : 'none';
+                    }
+                    
+                    if (summaryButton) {
+                        summaryButton.disabled = isLoading;
+                        summaryButton.textContent = isLoading ? 'Generating...' : 'Generate AI Summary';
+                    }
+                    
+                    if (isLoading) {
+                        // Show the container if we're loading
+                        const summaryContainer = document.getElementById('summary-container');
+                        if (summaryContainer) {
+                            summaryContainer.style.display = 'block';
+                        }
+                    }
+                    break;
+                    
+                case 'contact':
+                    const contactLoading = document.getElementById('contact-loading');
+                    const contactButton = document.getElementById('generate-contact-button');
+                    
+                    if (contactLoading) {
+                        contactLoading.style.display = isLoading ? 'flex' : 'none';
+                    }
+                    
+                    if (contactButton) {
+                        contactButton.disabled = isLoading;
+                        contactButton.textContent = isLoading ? 'Loading...' : 'Get Contact Summaries';
+                    }
+                    
+                    if (isLoading) {
+                        // Show the container if we're loading
+                        const contactContainer = document.getElementById('contact-container');
+                        if (contactContainer) {
+                            contactContainer.style.display = 'block';
+                        }
+                    }
+                    break;
+                    
+                case 'search':
+                    const searchLoading = document.getElementById('search-loading');
+                    const searchButton = document.getElementById('email-search-button');
+                    
+                    if (searchLoading) {
+                        searchLoading.style.display = isLoading ? 'flex' : 'none';
+                    }
+                    
+                    if (searchButton) {
+                        searchButton.disabled = isLoading;
+                        searchButton.textContent = isLoading ? 'Searching...' : 'Search';
+                    }
+                    
+                    // Show results container when search is complete, but only if we have results
+                    const searchResultsContainer = document.getElementById('search-results-container');
+                    if (searchResultsContainer && !isLoading) {
+                        const searchAnswer = searchResultsContainer.querySelector('.search-answer');
+                        if (searchAnswer && searchAnswer.textContent !== '' && !searchAnswer.classList.contains('placeholder')) {
+                            searchResultsContainer.style.display = 'block';
+                        }
+                    }
+                    break;
+                    
+                case 'reply':
+                    const replyLoading = document.getElementById('reply-loading');
+                    const replyButton = document.getElementById('btn-generate-reply-now');
+                    
+                    if (replyLoading) {
+                        replyLoading.style.display = isLoading ? 'flex' : 'none';
+                    }
+                    
+                    if (replyButton) {
+                        replyButton.disabled = isLoading;
+                        replyButton.textContent = isLoading ? 'Generating...' : 'Generate Reply';
+                    }
+                    break;
+                    
+                default:
+                    console.warn(`Unknown loading section: ${section}`);
+            }
+        }
+    } catch (error) {
+        console.error('Error setting loading state:', error);
+    }
+}
+
+/**
+ * Runs when the taskpane is loaded and ready
+ */
+async function loadTaskpane() {
+    try {
+        console.log('Loading taskpane...');
+        log('Taskpane loading started', 'info');
+        
+        // Set up event listeners for UI components
+        setupEventListeners();
+        setupNotesEventListeners(); // Add notes event listeners
+        
+        // Mark the app as loaded
+        isAppLoaded = true;
+        
+        // Load saved settings from local storage
+        await configureWithLocalStorageSettings();
+        
+        // Immediately check authentication status
+        log('Checking authentication status on startup', 'info');
+        const isAuthenticated = await window.OpsieApi.isAuthenticated();
+        log('Authentication status:', 'info', { authenticated: isAuthenticated });
+        
+        if (isAuthenticated) {
+            // User is authenticated, hide auth UI and show main content
+            log('User is authenticated, showing main content', 'info');
+            const authErrorContainer = document.getElementById('auth-error-container');
+            const authContainer = document.getElementById('auth-container');
+            const mainContent = document.getElementById('main-content');
+            
+            if (authErrorContainer) {
+                authErrorContainer.style.display = 'none';
+            }
+            
+            if (authContainer) {
+                authContainer.style.display = 'none';
+            }
+            
+            if (mainContent) {
+                mainContent.style.display = 'block';
+            }
+            
+            // Make sure all main UI sections are visible
+            showMainUISections();
+            
+            // Initialize team and user information
+            log('Initializing team and user information', 'info');
+            await window.OpsieApi.initTeamAndUserInfo(function(teamInfo) {
+                log('Team info initialized on startup', 'info', teamInfo);
+                
+                // If we have a team ID, load the current email
+                if (teamInfo.teamId) {
+                    log('Team ID available, loading current email', 'info');
+                    loadCurrentEmail();
+                } else {
+                    log('No team ID available, email loading may fail', 'warning');
+                    // Still try to load the email
+                    loadCurrentEmail();
+                }
+            });
+        } else {
+            // User is not authenticated, show auth UI
+            log('User is not authenticated, showing login UI', 'info');
+            const authErrorContainer = document.getElementById('auth-error-container');
+            const authContainer = document.getElementById('auth-container');
+            const mainContent = document.getElementById('main-content');
+            
+            if (authContainer) {
+                authContainer.style.display = 'flex';
+            }
+            
+            if (mainContent) {
+                mainContent.style.display = 'none';
+            }
+            
+            // Focus the email input field
+            const emailInput = document.getElementById('auth-email');
+            if (emailInput) {
+                setTimeout(() => {
+                    emailInput.focus();
+                }, 500);
+            }
+        }
+        
+        // Start periodic authentication checks
+        startAuthCheck();
+        
+    } catch (error) {
+        console.error('Error loading taskpane:', error);
+        log('Error loading taskpane:', 'error', error);
+        showNotification(
+            'Something went wrong while loading the taskpane. Try refreshing or reinstalling the add-in.',
+            'error'
+        );
+    }
+}
+
+/**
+ * Set up event listeners for notes functionality
+ */
+function setupNotesEventListeners() {
+    window.OpsieApi.log('Setting up notes event listeners', 'info');
+    
+    // Log all buttons to help with debugging
+    const allButtons = document.querySelectorAll('button');
+    window.OpsieApi.log('All buttons in the DOM:', 'info', 
+        Array.from(allButtons).map(b => ({id: b.id, text: b.textContent, visible: b.offsetParent !== null}))
+    );
+    
+    // Check if notes section exists
+    const notesSection = document.getElementById('notes-section');
+    window.OpsieApi.log('Notes section element:', 'info', {
+        exists: !!notesSection,
+        display: notesSection ? notesSection.style.display : 'N/A',
+        innerHTML: notesSection ? notesSection.innerHTML.substring(0, 100) + '...' : 'N/A'
+    });
+
+    // Force display of notes section for debugging
+    if (notesSection) {
+        notesSection.style.display = 'block';
+        window.OpsieApi.log('Forced notes section to display', 'info');
+        
+        // Add an alert to confirm this function ran
+        setTimeout(() => {
+            window.OpsieApi.log('Notes section is now visible', 'info');
+        }, 1000);
+    }
+
+    // Check if notes form container exists
+    const notesFormContainer = document.getElementById('notes-form-container');
+    window.OpsieApi.log('Notes form container:', 'info', {
+        exists: !!notesFormContainer,
+        display: notesFormContainer ? notesFormContainer.style.display : 'N/A'
+    });
+    
+    // Always show notes form for debugging
+    if (notesFormContainer) {
+        notesFormContainer.style.display = 'block';
+        window.OpsieApi.log('Forced notes form container to display', 'info');
+    }
+    
+    // Add debugging attribute to the whole document to check if click events work at all
+    document.body.setAttribute('onclick', 'console.log("Document body clicked"); window.OpsieApi.log("Document body clicked", "info");');
+    
+    window.OpsieApi.log('Notes event listeners setup complete', 'info');
+    
+    // Execute a test to confirm email data and user data
+    setTimeout(() => {
+        try {
+            window.OpsieApi.log('Testing current email data availability:', 'info', {
+                hasEmailData: !!currentEmailData,
+                messageId: currentEmailData ? currentEmailData.messageId : 'N/A'
+            });
+            
+            const userDataStr = localStorage.getItem('userData');
+            const userData = userDataStr ? JSON.parse(userDataStr) : null;
+            
+            window.OpsieApi.log('Testing user data availability:', 'info', {
+                hasUserData: !!userData,
+                userId: userData ? userData.id : 'N/A'
+            });
+        } catch (error) {
+            window.OpsieApi.log('Error checking data availability', 'error', error);
+        }
+    }, 2000);
+}
+
+/**
+ * Toggle the display of the notes form
+ * Make this global so it can be called from inline HTML
+ */
+window.toggleNotesForm = function() {
+    window.OpsieApi.log('Global toggleNotesForm called', 'info');
+    
+    try {
+        // First check if the email is saved
+        const isEmailSaved = currentEmailData && 
+                             currentEmailData.existingMessage && 
+                             currentEmailData.existingMessage.exists;
+        
+        if (!isEmailSaved) {
+            window.OpsieApi.log('Cannot toggle notes form: Email not saved', 'warning');
+            window.OpsieApi.showNotification('You must save the email before adding notes', 'warning');
+            return;
+        }
+        
+        // Show a notification instead of alert
+        window.OpsieApi.showNotification('Toggling notes form', 'info');
+        
+        const notesFormContainer = document.getElementById('notes-form-container');
+        if (notesFormContainer) {
+            const isVisible = notesFormContainer.style.display !== 'none';
+            window.OpsieApi.log('Notes form container found', 'info', { 
+                currentDisplay: notesFormContainer.style.display,
+                isVisible: isVisible,
+                newDisplay: isVisible ? 'none' : 'block'
+            });
+            
+            notesFormContainer.style.display = isVisible ? 'none' : 'block';
+            
+            // Clear form if hiding
+            if (isVisible) {
+                window.OpsieApi.log('Clearing note form content', 'info');
+                document.getElementById('note-body').value = '';
+            }
+        } else {
+            window.OpsieApi.log('Notes form container element not found', 'error');
+            window.OpsieApi.showNotification('Notes form container not found!', 'error');
+        }
+    } catch (error) {
+        window.OpsieApi.log('Error in toggleNotesForm', 'error', error);
+        window.OpsieApi.showNotification('Error: ' + error.message, 'error');
+    }
+};
+
+/**
+ * Load notes for the current email - global version for direct access
+ */
+window.loadNotesForCurrentEmail = async function() {
+    window.OpsieApi.log('Loading notes for current email', 'info');
+    try {
+        if (!currentEmailData) {
+            window.OpsieApi.log('No email data available for loading notes', 'error');
+            window.OpsieApi.showNotification('No email loaded. Cannot fetch notes.', 'error');
+            return;
+        }
+        
+        // Check if we have an existing message found in the database
+        if (!currentEmailData.existingMessage || !currentEmailData.existingMessage.exists) {
+            window.OpsieApi.log('Email is not saved yet, cannot fetch notes', 'warning');
+            window.OpsieApi.showNotification('Save the email first to add or view notes.', 'info');
+            return;
+        }
+        
+        // Always use the internal message ID from the database when available
+        // This is critical for secondary matches where external IDs differ
+        let messageId = null;
+        
+        if (currentEmailData.existingMessage.message && 
+            currentEmailData.existingMessage.message.id) {
+            // Use the internal database ID if available
+            messageId = currentEmailData.existingMessage.message.id;
+            window.OpsieApi.log('Using internal database ID for notes lookup', 'info', { 
+                internalId: messageId,
+                foundBy: currentEmailData.existingMessage.foundBy || 'unknown'
+            });
+        } else {
+            // Fall back to external ID if needed
+            messageId = currentEmailData.messageId;
+            window.OpsieApi.log('Using external message ID for notes lookup (fallback)', 'info', { 
+                externalId: messageId
+            });
+        }
+        
+        if (!messageId) {
+            window.OpsieApi.log('No message ID available for loading notes', 'error');
+            window.OpsieApi.showNotification('Cannot load notes: Message ID not found', 'error');
+            return;
+        }
+        
+        window.OpsieApi.log(`Loading notes for message`, 'info', { messageId });
+        
+        // Use the API service function to get notes
+        window.OpsieApi.log('Calling OpsieApi.getMessageNotes', 'info');
+        const result = await window.OpsieApi.getMessageNotes(messageId);
+        
+        window.OpsieApi.log('Result from getMessageNotes', 'info', result);
+        
+        if (result.success) {
+            const notes = result.notes;
+            window.OpsieApi.log(`Loaded ${notes.length} notes for message`, 'info', { messageId, notes });
+            
+            // Store the notes in the global variable
+            currentEmailNotes = notes;
+            
+            // Display the notes in the UI
+            window.OpsieApi.log('Displaying notes in UI', 'info');
+            window.displayNotes(notes);
+            
+            // Show the notes section
+            window.OpsieApi.log('Making notes section visible', 'info');
+            document.getElementById('notes-section').style.display = 'block';
+            
+            window.OpsieApi.showNotification(`Loaded ${notes.length} notes successfully`, 'success');
+        } else {
+            window.OpsieApi.log('Failed to load notes', 'error', result.error);
+            window.OpsieApi.showNotification('Failed to load notes: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        window.OpsieApi.log('Exception in loadNotesForCurrentEmail', 'error', error);
+        console.error('Error loading notes:', error);
+        window.OpsieApi.showNotification('Error loading notes: ' + error.message, 'error');
+    }
+};
+
+/**
+ * Display notes in the UI - global version for direct access
+ */
+window.displayNotes = function(notes) {
+    window.OpsieApi.log('Global displayNotes function called', 'info', { notesCount: notes ? notes.length : 0 });
+    
+    try {
+        const notesContainer = document.getElementById('notes-container');
+        
+        if (!notesContainer) {
+            window.OpsieApi.log('Notes container element not found', 'error');
+            window.OpsieApi.showNotification('Error: Notes container element not found', 'error');
+            return;
+        }
+        
+        if (!notes || notes.length === 0) {
+            window.OpsieApi.log('No notes to display, showing empty state message', 'info');
+            notesContainer.innerHTML = `
+                <div class="no-notes-message">
+                    No notes for this email yet. Click "Add Note" to create the first note.
+                </div>
+            `;
+            return;
+        }
+        
+        window.OpsieApi.log('Building HTML for notes', 'info', { notes });
+        let notesHtml = '';
+        
+        for (let i = 0; i < notes.length; i++) {
+            const note = notes[i];
+            window.OpsieApi.log('Processing note', 'info', { noteIndex: i, note });
+            
+            const noteDate = new Date(note.created_at);
+            const formattedDate = noteDate.toLocaleDateString() + ' ' + noteDate.toLocaleTimeString();
+            const categoryClass = note.category ? note.category.split(' ')[0] : '';
+            
+            try {
+                const noteHtml = `
+                    <div class="note-item">
+                        <div class="note-category ${categoryClass}">${note.category || 'Note'}</div>
+                        <div class="note-text">${window.escapeHtml(note.note_body || note.body || '')}</div>
+                        <div class="note-meta">
+                            <span class="note-author">${window.escapeHtml(note.user?.name || 'Unknown User')}</span>
+                            <span class="note-date">${formattedDate}</span>
+                        </div>
+                    </div>
+                `;
+                notesHtml += noteHtml;
+                window.OpsieApi.log('Added HTML for note', 'info', { 
+                    noteIndex: i, 
+                    category: note.category,
+                    body: note.note_body || note.body
+                });
+            } catch (error) {
+                window.OpsieApi.log('Error generating HTML for note', 'error', { 
+                    noteIndex: i, 
+                    note, 
+                    error 
+                });
+            }
+        }
+        
+        window.OpsieApi.log('Setting HTML for notes container', 'info');
+        notesContainer.innerHTML = notesHtml;
+        window.OpsieApi.log('Finished displaying notes', 'info');
+    } catch (error) {
+        window.OpsieApi.log('Error in global displayNotes', 'error', error);
+        window.OpsieApi.showNotification('Error displaying notes: ' + error.message, 'error');
+    }
+};
+
+/**
+ * Helper function to escape HTML - global version
+ */
+window.escapeHtml = function(str) {
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+};
+
+// Add a global function that can be called directly from HTML
+window.addTestNoteGlobal = async function() {
+    try {
+        // Show a notification instead of an alert
+        window.OpsieApi.showNotification("Adding test note...", 'info');
+        
+        window.OpsieApi.log('Global add test note function called', 'info');
+        
+        if (!currentEmailData) {
+            window.OpsieApi.log('No email data available for test note', 'error');
+            window.OpsieApi.showNotification('No email loaded. Cannot add test note.', 'error');
+            return;
+        }
+
+        // Check if the email is saved in the database
+        if (!currentEmailData.existingMessage || !currentEmailData.existingMessage.exists) {
+            window.OpsieApi.log('Email is not saved yet, cannot add notes', 'warning');
+            window.OpsieApi.showNotification('Save the email first to add notes.', 'info');
+            return;
+        }
+
+        // Always use the internal message ID from the database when available
+        let messageId = null;
+        
+        if (currentEmailData.existingMessage.message && 
+            currentEmailData.existingMessage.message.id) {
+            // Use the internal database ID if available
+            messageId = currentEmailData.existingMessage.message.id;
+            window.OpsieApi.log('Using internal database ID for adding note', 'info', { 
+                internalId: messageId,
+                foundBy: currentEmailData.existingMessage.foundBy || 'unknown'
+            });
+        } else {
+            // Fall back to external ID if needed
+            messageId = currentEmailData.messageId;
+            window.OpsieApi.log('Using external message ID for adding note (fallback)', 'info', { 
+                externalId: messageId
+            });
+        }
+        
+        if (!messageId) {
+            window.OpsieApi.log('No message ID available for adding note', 'error');
+            window.OpsieApi.showNotification('Cannot add note: Message ID not found', 'error');
+            return;
+        }
+        
+        try {
+            // Get the user ID using our utility function
+            const userId = await window.getUserId();
+            
+            if (!userId) {
+                window.OpsieApi.showNotification('Cannot add test note: User ID not found', 'error');
+                return;
+            }
+            
+            // Add a test note with timestamp
+            const testNoteBody = `Test note created at ${new Date().toLocaleString()}`;
+            window.OpsieApi.log('Adding test note', 'info', {
+                messageId: messageId,
+                userId: userId,
+                noteBody: testNoteBody
+            });
+            
+            const result = await window.OpsieApi.addNoteToMessage(
+                messageId,
+                userId,
+                testNoteBody,
+                'Information'
+            );
+            
+            window.OpsieApi.log('Test note result:', 'info', result);
+            
+            if (result.success) {
+                window.OpsieApi.showNotification('Test note added successfully!', 'success');
+                await window.loadNotesForCurrentEmail();
+            } else {
+                window.OpsieApi.showNotification(`Failed to add test note: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            window.OpsieApi.log('Error adding test note', 'error', error);
+            window.OpsieApi.showNotification('Error adding test note: ' + error.message, 'error');
+        }
+    } catch (error) {
+        window.OpsieApi.log('Exception in global addTestNoteGlobal', 'error', error);
+        window.OpsieApi.showNotification('Error: ' + error.message, 'error');
+    }
+};
+    
+/**
+ * Global function to add a note directly from form
+ */
+window.directAddNote = async function(noteBody, category) {
+    window.OpsieApi.log('Global directAddNote function called', 'info');
+    
+    try {
+        // If parameters not provided, get values from form
+        if (!noteBody) {
+            noteBody = document.getElementById('note-body').value.trim();
+        }
+        
+        if (!category) {
+            category = document.getElementById('note-category').value;
+        }
+        
+        window.OpsieApi.log('Direct note data', 'info', { 
+            body: noteBody, 
+            category: category 
+        });
+        
+        // Validate input
+        if (!noteBody) {
+            window.OpsieApi.showNotification('Please enter a note', 'error');
+            return;
+        }
+        
+        // Check if we have current email data
+        if (!currentEmailData) {
+            window.OpsieApi.log('No email data available for adding note', 'error');
+            window.OpsieApi.showNotification('No email loaded. Cannot add note.', 'error');
+            return;
+        }
+        
+        // Check if the email is saved in the database
+        if (!currentEmailData.existingMessage || !currentEmailData.existingMessage.exists) {
+            window.OpsieApi.log('Email is not saved yet, cannot add notes', 'warning');
+            window.OpsieApi.showNotification('Save the email first to add notes.', 'info');
+            return;
+        }
+        
+        // Always use the internal message ID from the database when available
+        let messageId = null;
+        
+        if (currentEmailData.existingMessage.message && 
+            currentEmailData.existingMessage.message.id) {
+            // Use the internal database ID if available
+            messageId = currentEmailData.existingMessage.message.id;
+            window.OpsieApi.log('Using internal database ID for adding note', 'info', { 
+                internalId: messageId,
+                foundBy: currentEmailData.existingMessage.foundBy || 'unknown'
+            });
+        } else {
+            // Fall back to external ID if needed
+            messageId = currentEmailData.messageId;
+            window.OpsieApi.log('Using external message ID for adding note (fallback)', 'info', { 
+                externalId: messageId
+            });
+        }
+        
+        if (!messageId) {
+            window.OpsieApi.log('No message ID available for adding note', 'error');
+            window.OpsieApi.showNotification('Cannot add note: Message ID not found', 'error');
+            return;
+        }
+        
+        try {
+            // Get the user ID using our utility function
+            const userId = await window.getUserId();
+            
+            if (!userId) {
+                window.OpsieApi.showNotification('Cannot add note: User ID not found', 'error');
+                return;
+            }
+            
+            window.OpsieApi.log('Adding note with data', 'info', {
+                messageId: messageId,
+                userId: userId,
+                noteBody: noteBody,
+                category: category
+            });
+            
+            window.OpsieApi.showNotification('Adding note...', 'info');
+            
+            // Call the API to add the note
+            const result = await window.OpsieApi.addNoteToMessage(
+                messageId,
+                userId,
+                noteBody,
+                category
+            );
+            
+            if (result.success) {
+                window.OpsieApi.showNotification('Note added successfully', 'success');
+                
+                // Clear the note body textarea
+                document.getElementById('note-body').value = '';
+                
+                // Toggle the form back to hidden
+                window.toggleNotesForm();
+                
+                // Reload notes to show the new one
+                await window.loadNotesForCurrentEmail();
+            } else {
+                window.OpsieApi.showNotification('Failed to add note: ' + (result.error || 'Unknown error'), 'error');
+            }
+        } catch (error) {
+            window.OpsieApi.log('Error adding note', 'error', error);
+            window.OpsieApi.showNotification('Error adding note: ' + error.message, 'error');
+        }
+    } catch (error) {
+        window.OpsieApi.log('Exception in directAddNote', 'error', error);
+        window.OpsieApi.showNotification('Error adding note: ' + error.message, 'error');
+    }
+};
+    
+/**
+ * Global utility function to get the current user ID
+ * This centralizes the user ID retrieval logic to avoid repetition
+ */
+window.getUserId = async function() {
+    try {
+        window.OpsieApi.log('Getting user ID', 'info');
+        
+        // First try to get from localStorage
+        let userId = localStorage.getItem('userId');
+        
+        if (userId) {
+            window.OpsieApi.log('Found userId in localStorage', 'info', userId);
+            return userId;
+        }
+        
+        // Try to get from Office identity
+        return new Promise((resolve, reject) => {
+            Office.context.mailbox.getUserIdentityTokenAsync(async function(result) {
+                if (result.status === Office.AsyncResultStatus.Succeeded) {
+                    try {
+                        // Try to get the team info which should have userId
+                        const teamInfoResult = await window.OpsieApi.initTeamAndUserInfo();
+                        
+                        if (teamInfoResult && typeof teamInfoResult === 'object') {
+                            // New return format: object with userId property
+                            if (teamInfoResult.userId) {
+                                window.OpsieApi.log('Retrieved userId from team info result', 'info', teamInfoResult.userId);
+                                resolve(teamInfoResult.userId);
+                                return;
+                            }
+                        } else if (teamInfoResult === true) {
+                            // Old format (boolean true)
+                            // Try to get userId from localStorage again since initTeamAndUserInfo might have set it
+                            userId = localStorage.getItem('userId');
+                            if (userId) {
+                                window.OpsieApi.log('Found userId in localStorage after initTeamAndUserInfo', 'info', userId);
+                                resolve(userId);
+                                return;
+                            }
+                        }
+                        
+                        // If we still don't have a user ID, try to get it directly
+                        window.OpsieApi.log('User ID not found in team info, trying direct user info fetch', 'warning');
+                        
+                        // Try the new getUserInfo function as a last resort
+                        const userInfo = await window.OpsieApi.getUserInfo();
+                        if (userInfo && userInfo.id) {
+                            window.OpsieApi.log('Retrieved userId from direct API call', 'info', userInfo.id);
+                            // Save for future use
+                            localStorage.setItem('userId', userInfo.id);
+                            resolve(userInfo.id);
+                            return;
+                        }
+                        
+                        window.OpsieApi.log('User ID not found in any source', 'error');
+                        reject(new Error('User ID not found in any available source'));
+                    } catch (error) {
+                        window.OpsieApi.log('Error getting team or user info', 'error', error);
+                        reject(error);
+                    }
+                } else {
+                    window.OpsieApi.log('Failed to get user identity token', 'error', result.error);
+                    reject(new Error('Failed to get user identity token: ' + result.error.message));
+                }
+            });
+        });
+    } catch (error) {
+        window.OpsieApi.log('Error in getUserId', 'error', error);
+        throw error;
+    }
+};
+    
+// Add a helper function to display the current message ID information
+window.checkCurrentMessageId = function() {
+    try {
+        window.OpsieApi.log('Checking current message ID details', 'info');
+        
+        if (!currentEmailData) {
+            window.OpsieApi.showNotification('No email data available', 'warning');
+            return;
+        }
+        
+        // Determine what ID would be used for note operations
+        let messageId = currentEmailData.messageId;
+        let idSource = 'external (Office.js)';
+        let foundBy = 'not found in database';
+        
+        // Check if we have internal ID from a database match
+        if (currentEmailData.existingMessage && 
+            currentEmailData.existingMessage.exists && 
+            currentEmailData.existingMessage.message && 
+            currentEmailData.existingMessage.message.id) {
+            
+            if (currentEmailData.existingMessage.foundBy === 'secondary') {
+                const internalId = currentEmailData.existingMessage.message.id;
+                messageId = internalId;
+                idSource = 'internal (database)';
+                foundBy = 'secondary match (sender+timestamp)';
+            } else {
+                foundBy = 'primary match (external ID)';
+            }
+        }
+        
+        // Log the details
+        window.OpsieApi.log('Message ID details', 'info', {
+            currentId: messageId,
+            source: idSource,
+            foundBy: foundBy,
+            externalId: currentEmailData.messageId,
+            databaseRecord: currentEmailData.existingMessage || 'none'
+        });
+        
+        // Show a notification with key information
+        window.OpsieApi.showNotification(
+            `Current message ID: ${messageId.substring(0, 12)}... (${idSource}) - Found by: ${foundBy}`, 
+            'info'
+        );
+        
+        return { messageId, idSource, foundBy };
+    } catch (error) {
+        window.OpsieApi.log('Error checking message ID', 'error', error);
+        window.OpsieApi.showNotification('Error checking message ID: ' + error.message, 'error');
+    }
+};
+    
+// Function to authenticate with Supabase
+async function loginWithSupabase(email, password) {
+    try {
+        log('Attempting to login with Supabase', 'info');
+        
+        // Call the login function from the API service
+        const result = await window.OpsieApi.login(email, password);
+        
+        log('Login result received from API service', 'info', {
+            success: result.success,
+            error: result.error ? 'Error present' : 'No error'
+        });
+        
+        return result;
+    } catch (error) {
+        log('Error in loginWithSupabase function', 'error', error);
+        return {
+            success: false,
+            error: {
+                message: error.message || 'An unexpected error occurred during login'
+            }
+        };
+    }
+}
+
+// Function to start periodic authentication checks
+function startAuthCheck() {
+    // Check immediately
+    checkAuthStatus();
+    
+    // Then check every 5 minutes (300000 ms)
+    setInterval(checkAuthStatus, 300000);
+    
+    log('Started periodic authentication checks', 'info');
+}
+
+// Show settings panel with team management
+function showSettings() {
+    log('Opening settings panel', 'info');
+    
+    // Hide all sections first
+    hideAllSections();
+    
+    // Load current user and team information with force refresh
+    loadUserSettingsInfo(true);
+    
+    // Show settings container
+    const settingsContainer = document.getElementById('settings-container');
+    if (settingsContainer) {
+        settingsContainer.style.display = 'block';
+    }
+}
+
+// Load user and team information for settings panel
+async function loadUserSettingsInfo(forceRefresh = false) {
+    try {
+        log('Loading user settings information', 'info', { forceRefresh });
+        
+        // Get current user information
+        const userData = await window.OpsieApi.getUserInfo(forceRefresh);
+        log('User info for settings', 'info', userData);
+        
+        if (userData) {
+            // Update user information display
+            const userEmailEl = document.getElementById('settings-user-email');
+            const teamNameEl = document.getElementById('settings-team-name');
+            const userRoleEl = document.getElementById('settings-user-role');
+            
+            if (userEmailEl) {
+                userEmailEl.textContent = userData.email || '-';
+            }
+            
+            if (teamNameEl) {
+                // For team name, use stored value or format from team_id
+                const teamName = userData.teamName || 
+                                localStorage.getItem('currentTeamName') || 
+                                (userData.team_id ? `Team ${userData.team_id.substring(0, 6)}...` : '-');
+                teamNameEl.textContent = teamName;
+            }
+            
+            if (userRoleEl) {
+                userRoleEl.textContent = userData.role || 'member';
+            }
+            
+            // Load team details if user has a team
+            if (userData.team_id) {
+                await loadTeamDetails(userData.team_id, forceRefresh);
+                
+                // Set up team management controls based on user role
+                setupTeamControls(userData.role);
+            } else {
+                log('User does not have a team', 'info');
+                hideTeamSections();
+            }
+        } else {
+            log('Failed to load user information', 'error');
+            showErrorNotification('Failed to load user information');
+        }
+    } catch (error) {
+        log('Error loading user settings information', 'error', error);
+        showErrorNotification('Error loading settings information');
+    }
+}
+
+// Load team details for the settings panel
+async function loadTeamDetails(teamId, forceRefresh = false) {
+    try {
+        log('Loading team details', 'info', { teamId, forceRefresh });
+        
+        const teamDetailsResult = await window.OpsieApi.getTeamDetails(teamId, forceRefresh);
+        log('Team details result', 'info', teamDetailsResult);
+        
+        if (teamDetailsResult && teamDetailsResult.success) {
+            const teamData = teamDetailsResult.data;
+            
+            // Update team details in the display view
+            const organizationEl = document.getElementById('team-organization');
+            const invoiceEmailEl = document.getElementById('team-invoice-email');
+            const billingAddressEl = document.getElementById('team-billing-address');
+            const accessCodeEl = document.getElementById('team-access-code');
+            
+            if (organizationEl) {
+                organizationEl.textContent = teamData.organization || '-';
+            }
+            
+            if (invoiceEmailEl) {
+                invoiceEmailEl.textContent = teamData.invoice_email || '-';
+            }
+            
+            if (billingAddressEl) {
+                // Format billing address
+                const addressParts = [];
+                if (teamData.billing_street) addressParts.push(teamData.billing_street);
+                if (teamData.billing_city) addressParts.push(teamData.billing_city);
+                if (teamData.billing_region) addressParts.push(teamData.billing_region);
+                if (teamData.billing_country) addressParts.push(teamData.billing_country);
+                
+                billingAddressEl.textContent = addressParts.length > 0 ? addressParts.join(', ') : '-';
+            }
+            
+            if (accessCodeEl) {
+                accessCodeEl.textContent = teamData.access_code || '-';
+            }
+            
+            // Also set up the edit form with current values
+            document.getElementById('edit-team-organization').value = teamData.organization || '';
+            document.getElementById('edit-team-invoice-email').value = teamData.invoice_email || '';
+            document.getElementById('edit-team-billing-street').value = teamData.billing_street || '';
+            document.getElementById('edit-team-billing-city').value = teamData.billing_city || '';
+            document.getElementById('edit-team-billing-region').value = teamData.billing_region || '';
+            document.getElementById('edit-team-billing-country').value = teamData.billing_country || '';
+            
+            // Load team members
+            await loadTeamMembers(teamId, forceRefresh);
+        } else {
+            log('Failed to load team details', 'error');
+            showErrorNotification('Failed to load team details');
+        }
+    } catch (error) {
+        log('Error loading team details', 'error', error);
+        showErrorNotification('Error loading team details');
+    }
+}
+
+/**
+ * Load team members for the specified team
+ * @param {string} teamId - The team ID to load members for
+ * @param {boolean} forceRefresh - Whether to force refresh from the API instead of cache
+ * @returns {Promise<void>}
+ */
+async function loadTeamMembers(teamId, forceRefresh = false) {
+    try {
+        log('Loading team members', 'info', { teamId, forceRefresh });
+        
+        if (!teamId) {
+            log('No team ID provided, cannot load team members', 'warning');
+            return;
+        }
+        
+        // Get team members from the API, passing the forceRefresh parameter
+        const membersResult = await window.OpsieApi.getTeamMembers(teamId, forceRefresh);
+        
+        if (membersResult.success && membersResult.data) {
+            const teamMembersList = document.getElementById('team-members-list');
+            if (!teamMembersList) {
+                log('Team members list element not found', 'warning');
+                return;
+            }
+            
+            // Clear the current list
+            teamMembersList.innerHTML = '';
+            
+            // Get current user ID
+            const userData = await window.OpsieApi.getUserInfo();
+            const currentUserId = userData.id;
+            
+            // Sort members: admins first, then alphabetically by name
+            const sortedMembers = [...membersResult.data].sort((a, b) => {
+                // Sort by role first (admin before member)
+                if (a.role === 'admin' && b.role !== 'admin') return -1;
+                if (a.role !== 'admin' && b.role === 'admin') return 1;
+                
+                // Then sort by name
+                const nameA = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+                const nameB = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+                
+                // If names are equal or empty, sort by email
+                if (!nameA || !nameB || nameA === nameB) {
+                    return a.email.localeCompare(b.email);
+                }
+                
+                return nameA.localeCompare(nameB);
+            });
+            
+            // Add each member to the list
+            sortedMembers.forEach(member => {
+                const memberItem = document.createElement('div');
+                memberItem.className = 'team-member-item';
+                
+                // If this is the current user, add a special class
+                if (member.id === currentUserId) {
+                    memberItem.classList.add('current-user');
+                }
+                
+                // Format name (either first+last name or just email if no name)
+                const memberName = `${member.first_name || ''} ${member.last_name || ''}`.trim();
+                const displayName = memberName || member.email;
+                
+                // Format role with special styling
+                const roleClass = member.role === 'admin' ? 'role-admin' : 'role-member';
+                
+                memberItem.innerHTML = `
+                    <div class="member-info">
+                        <span class="member-name">${displayName}</span>
+                        <span class="team-member-role ${roleClass}">${member.role}</span>
+                        ${member.id === currentUserId ? '<span class="current-user-indicator">(You)</span>' : ''}
+                    </div>
+                    ${userData.role === 'admin' && member.id !== currentUserId ? 
+                        `<div class="team-member-actions">
+                            <button class="team-member-remove-btn" data-member-id="${member.id}" data-member-email="${member.email}">
+                                Remove
+                            </button>
+                        </div>` : ''
+                    }
+                `;
+                
+                teamMembersList.appendChild(memberItem);
+            });
+            
+            // Add event listeners to remove buttons
+            const removeButtons = document.querySelectorAll('.team-member-remove-btn');
+            removeButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const memberId = button.dataset.memberId;
+                    const memberEmail = button.dataset.memberEmail;
+                    handleRemoveTeamMember(memberId, memberEmail);
+                });
+            });
+            
+        } else {
+            log('Failed to load team members', 'error', membersResult.error);
+        }
+    } catch (error) {
+        log('Error loading team members', 'error', error);
+    }
+}
+
+// Load pending join requests for admins
+async function loadPendingRequests(teamId) {
+    try {
+        log('Loading pending join requests', 'info', { teamId });
+        
+        const requestsResult = await window.OpsieApi.getPendingJoinRequests(teamId);
+        log('Join requests result', 'info', requestsResult);
+        
+        if (requestsResult && requestsResult.success) {
+            const requests = requestsResult.data;
+            const requestsList = document.getElementById('join-requests-list');
+            const noRequestsMsg = document.getElementById('no-requests-message');
+            
+            if (requestsList) {
+                // Clear existing requests (except the no requests message)
+                if (noRequestsMsg) {
+                    requestsList.innerHTML = '';
+                    requestsList.appendChild(noRequestsMsg);
+                } else {
+                    requestsList.innerHTML = '<p id="no-requests-message" style="font-style: italic; color: #666; margin: 5px;">No pending join requests</p>';
+                }
+                
+                if (requests && requests.length > 0) {
+                    // Hide the no requests message
+                    if (noRequestsMsg) {
+                        noRequestsMsg.style.display = 'none';
+                    }
+                    
+                    // Add each request to the list
+                    requests.forEach(request => {
+                        const requestItem = document.createElement('div');
+                        requestItem.className = 'request-item';
+                        
+                        const requestInfo = document.createElement('div');
+                        requestInfo.textContent = `${request.user_email} has requested to join your team`;
+                        
+                        const requestTime = document.createElement('div');
+                        requestTime.className = 'request-time';
+                        
+                        // Format the created_at timestamp
+                        const created = new Date(request.created_at);
+                        requestTime.textContent = `Requested on ${created.toLocaleDateString()} at ${created.toLocaleTimeString()}`;
+                        
+                        const requestActions = document.createElement('div');
+                        requestActions.className = 'request-actions';
+                        
+                        const approveBtn = document.createElement('button');
+                        approveBtn.className = 'request-approve-btn';
+                        approveBtn.textContent = 'Approve';
+                        approveBtn.onclick = () => handleRequestResponse(request.id, true);
+                        
+                        const denyBtn = document.createElement('button');
+                        denyBtn.className = 'request-deny-btn';
+                        denyBtn.textContent = 'Deny';
+                        denyBtn.onclick = () => handleRequestResponse(request.id, false);
+                        
+                        requestActions.appendChild(approveBtn);
+                        requestActions.appendChild(denyBtn);
+                        
+                        requestItem.appendChild(requestInfo);
+                        requestItem.appendChild(requestTime);
+                        requestItem.appendChild(requestActions);
+                        
+                        requestsList.appendChild(requestItem);
+                    });
+                } else {
+                    // Show the no requests message
+                    if (noRequestsMsg) {
+                        noRequestsMsg.style.display = 'block';
+                    }
+                }
+            }
+        } else {
+            log('Failed to load join requests', 'error');
+            showErrorNotification('Failed to load join requests');
+        }
+    } catch (error) {
+        log('Error loading join requests', 'error', error);
+        showErrorNotification('Error loading join requests');
+    }
+}
+
+// Set up team management controls based on user role
+function setupTeamControls(userRole) {
+    log('Setting up team controls for role', 'info', { userRole });
+    
+    const teamDetailsSection = document.getElementById('team-details-section');
+    const joinRequestsSection = document.getElementById('join-requests-section');
+    const adminControls = document.getElementById('admin-controls');
+    const memberControls = document.getElementById('member-controls');
+    const editTeamDetailsButton = document.getElementById('edit-team-details-button');
+    
+    if (userRole === 'admin') {
+        // User is admin, show admin controls
+        if (teamDetailsSection) teamDetailsSection.style.display = 'block';
+        if (joinRequestsSection) joinRequestsSection.style.display = 'block';
+        if (adminControls) adminControls.style.display = 'block';
+        if (memberControls) memberControls.style.display = 'none';
+        if (editTeamDetailsButton) editTeamDetailsButton.style.display = 'inline-block';
+        
+        // For admins, also load pending join requests
+        const userInfo = window.OpsieApi.getUserInfo();
+        if (userInfo && userInfo.data && userInfo.data.teamId) {
+            loadPendingRequests(userInfo.data.teamId);
+        }
+    } else {
+        // User is a regular member
+        if (teamDetailsSection) teamDetailsSection.style.display = 'block';
+        if (joinRequestsSection) joinRequestsSection.style.display = 'none';
+        if (adminControls) adminControls.style.display = 'none';
+        if (memberControls) memberControls.style.display = 'block';
+        if (editTeamDetailsButton) editTeamDetailsButton.style.display = 'none';
+    }
+}
+
+// Hide team-related sections in settings
+function hideTeamSections() {
+    const teamDetailsSection = document.getElementById('team-details-section');
+    const joinRequestsSection = document.getElementById('join-requests-section');
+    const adminControls = document.getElementById('admin-controls');
+    const memberControls = document.getElementById('member-controls');
+    
+    if (teamDetailsSection) teamDetailsSection.style.display = 'none';
+    if (joinRequestsSection) joinRequestsSection.style.display = 'none';
+    if (adminControls) adminControls.style.display = 'none';
+    if (memberControls) memberControls.style.display = 'none';
+}
+
+// Hide all content sections
+function hideAllSections() {
+    // First, save the current display state of sections with IDs
+    try {
+        const displayStates = {};
+        const sections = document.querySelectorAll('.section');
+        sections.forEach(section => {
+            if (section.id) {
+                displayStates[section.id] = section.style.display || 'block';
+            }
+        });
+        localStorage.setItem('sectionDisplayStates', JSON.stringify(displayStates));
+        log('Saved display states before hiding sections', 'info', displayStates);
+    } catch (error) {
+        log('Error saving section display states: ' + error.message, 'error');
+    }
+    
+    // Now hide all sections
+    const sections = document.querySelectorAll('.section');
+    sections.forEach(section => {
+        section.style.display = 'none';
+    });
+}
+
+// Handler for removing a team member
+async function handleRemoveTeamMember(memberId, memberEmail) {
+    try {
+        if (!confirm(`Are you sure you want to remove ${memberEmail} from the team?`)) {
+            return;
+        }
+        
+        log('Removing team member', 'info', { memberId, memberEmail });
+        
+        const result = await window.OpsieApi.removeTeamMember(memberId);
+        log('Remove team member result', 'info', result);
+        
+        if (result && result.success) {
+            showNotification(`Successfully removed ${memberEmail} from the team`);
+            
+            // Refresh team members list
+            const userInfo = await window.OpsieApi.getUserInfo();
+            if (userInfo && userInfo.data && userInfo.data.teamId) {
+                await loadTeamMembers(userInfo.data.teamId);
+            }
+        } else {
+            log('Failed to remove team member', 'error');
+            showErrorNotification(`Failed to remove ${memberEmail} from the team`);
+        }
+    } catch (error) {
+        log('Error removing team member', 'error', error);
+        showErrorNotification(`Error removing team member: ${error.message}`);
+    }
+}
+
+// Handler for responding to join requests
+async function handleRequestResponse(requestId, approved) {
+    try {
+        log('Responding to join request', 'info', { requestId, approved });
+        
+        const result = await window.OpsieApi.respondToJoinRequest(requestId, approved);
+        log('Join request response result', 'info', result);
+        
+        if (result && result.success) {
+            const action = approved ? 'approved' : 'denied';
+            showNotification(`Successfully ${action} the join request`);
+            
+            // Refresh pending requests
+            const userInfo = await window.OpsieApi.getUserInfo();
+            if (userInfo && userInfo.data && userInfo.data.teamId) {
+                await loadPendingRequests(userInfo.data.teamId);
+            }
+        } else {
+            log('Failed to respond to join request', 'error');
+            const action = approved ? 'approve' : 'deny';
+            showErrorNotification(`Failed to ${action} the join request`);
+        }
+    } catch (error) {
+        log('Error responding to join request', 'error', error);
+        showErrorNotification(`Error responding to join request: ${error.message}`);
+    }
+}
+
+// Handler for team admin transfer
+async function handleTransferAdmin() {
+    try {
+        const teamMembersSelect = document.getElementById('team-members-select');
+        const newAdminId = teamMembersSelect.value;
+        
+        if (!newAdminId) {
+            showErrorNotification('Please select a team member to transfer admin rights to');
+            return;
+        }
+        
+        if (!confirm('Are you sure you want to transfer admin rights to this user? You will become a regular member.')) {
+            return;
+        }
+        
+        log('Transferring admin rights', 'info', { newAdminId });
+        
+        const result = await window.OpsieApi.transferAdminRole(newAdminId);
+        log('Transfer admin result', 'info', result);
+        
+        if (result && result.success) {
+            showNotification('Admin rights transferred successfully');
+            
+            // Refresh user info and update the UI
+            await loadUserSettingsInfo();
+        } else {
+            log('Failed to transfer admin rights', 'error');
+            showErrorNotification('Failed to transfer admin rights');
+        }
+    } catch (error) {
+        log('Error transferring admin rights', 'error', error);
+        showErrorNotification(`Error transferring admin rights: ${error.message}`);
+    }
+}
+
+// Handler for leaving a team
+async function handleLeaveTeam() {
+    try {
+        if (!confirm('Are you sure you want to leave this team? You will no longer have access to team data.')) {
+            return;
+        }
+        
+        log('Leaving team', 'info');
+        
+        const result = await window.OpsieApi.leaveTeam();
+        log('Leave team result', 'info', result);
+        
+        if (result && result.success) {
+            showNotification('You have left the team successfully');
+            
+            // Update UI to reflect the user is no longer in a team
+            hideTeamSections();
+            
+            // Update user info display
+            await loadUserSettingsInfo();
+        } else {
+            log('Failed to leave team', 'error');
+            showErrorNotification('Failed to leave team');
+        }
+    } catch (error) {
+        log('Error leaving team', 'error', error);
+        showErrorNotification(`Error leaving team: ${error.message}`);
+    }
+}
+
+// Handler for deleting a team
+async function handleDeleteTeam() {
+    try {
+        if (!confirm('Are you sure you want to delete this team? This action cannot be undone and will remove all team members.')) {
+            return;
+        }
+        
+        // Double-check with a more explicit confirmation
+        if (!confirm('WARNING: This will permanently delete the team and remove all members. Type "DELETE" to confirm.')) {
+            return;
+        }
+        
+        log('Deleting team', 'info');
+        
+        const result = await window.OpsieApi.deleteTeam();
+        log('Delete team result', 'info', result);
+        
+        if (result && result.success) {
+            showNotification('Team deleted successfully');
+            
+            // Update UI to reflect the user is no longer in a team
+            hideTeamSections();
+            
+            // Update user info display
+            await loadUserSettingsInfo();
+        } else {
+            log('Failed to delete team', 'error');
+            showErrorNotification('Failed to delete team');
+        }
+    } catch (error) {
+        log('Error deleting team', 'error', error);
+        showErrorNotification(`Error deleting team: ${error.message}`);
+    }
+}
+
+// Handler for updating team details
+async function handleUpdateTeamDetails() {
+    try {
+        const organization = document.getElementById('edit-team-organization').value;
+        const invoiceEmail = document.getElementById('edit-team-invoice-email').value;
+        const billingStreet = document.getElementById('edit-team-billing-street').value;
+        const billingCity = document.getElementById('edit-team-billing-city').value;
+        const billingRegion = document.getElementById('edit-team-billing-region').value;
+        const billingCountry = document.getElementById('edit-team-billing-country').value;
+        
+        // Validate invoice email if provided
+        if (invoiceEmail && !isValidEmail(invoiceEmail)) {
+            showErrorNotification('Please enter a valid invoice email address');
+            return;
+        }
+        
+        const teamDetails = {
+            organization,
+            invoice_email: invoiceEmail,
+            billing_street: billingStreet,
+            billing_city: billingCity,
+            billing_region: billingRegion,
+            billing_country: billingCountry
+        };
+        
+        log('Updating team details', 'info', teamDetails);
+        
+        const userInfo = await window.OpsieApi.getUserInfo();
+        if (!userInfo || !userInfo.data || !userInfo.data.teamId) {
+            showErrorNotification('No team ID found');
+            return;
+        }
+        
+        const result = await window.OpsieApi.updateTeamDetails(userInfo.data.teamId, teamDetails);
+        log('Update team details result', 'info', result);
+        
+        if (result && result.success) {
+            showNotification('Team details updated successfully');
+            
+            // Toggle back to display view
+            toggleTeamDetailsView();
+            
+            // Refresh team details
+            await loadTeamDetails(userInfo.data.teamId);
+        } else {
+            log('Failed to update team details', 'error');
+            showErrorNotification('Failed to update team details');
+        }
+    } catch (error) {
+        log('Error updating team details', 'error', error);
+        showErrorNotification(`Error updating team details: ${error.message}`);
+    }
+}
+
+// Toggle between team details display and edit views
+function toggleTeamDetailsView() {
+    const displayView = document.getElementById('team-details-display');
+    const editView = document.getElementById('team-details-edit');
+    
+    if (displayView && editView) {
+        const isEditMode = editView.style.display === 'block';
+        
+        if (isEditMode) {
+            // Switch to display mode
+            displayView.style.display = 'block';
+            editView.style.display = 'none';
+        } else {
+            // Switch to edit mode
+            displayView.style.display = 'none';
+            editView.style.display = 'block';
+        }
+    }
+}
+
+// Email validation helper function
+function isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+}
+
+// Function to handle logout
+async function handleLogout() {
+    try {
+        log('Showing logout confirmation dialog', 'info');
+        
+        // Use custom dialog instead of window.confirm (which is not supported)
+        const modal = document.getElementById('custom-modal-backdrop');
+        const modalTitle = document.getElementById('custom-modal-title');
+        const modalBody = document.getElementById('custom-modal-body');
+        const modalInput = document.getElementById('custom-modal-input');
+        const modalOkButton = document.getElementById('custom-modal-ok');
+        const modalCancelButton = document.getElementById('custom-modal-cancel');
+        const modalCloseButton = document.getElementById('custom-modal-close');
+        
+        if (!modal || !modalTitle || !modalBody) {
+            // Fallback if modal elements don't exist - just logout without confirmation
+            log('Modal elements not found, proceeding with logout', 'warning');
+            proceedWithLogout();
+            return;
+        }
+        
+        // Set up modal for logout confirmation
+        modalTitle.textContent = 'Confirm Logout';
+        modalBody.innerHTML = '<p>Are you sure you want to log out?</p>';
+        
+        // Hide the input field since we don't need it for confirmation
+        if (modalInput) {
+            modalInput.style.display = 'none';
+        }
+        
+        // Set up event handlers for the buttons
+        const okHandler = () => {
+            // Remove event listeners
+            cleanupEventListeners();
+            // Hide the modal
+            modal.style.display = 'none';
+            // Proceed with logout
+            proceedWithLogout();
+        };
+        
+        const cancelHandler = () => {
+            // Remove event listeners
+            cleanupEventListeners();
+            // Hide the modal
+            modal.style.display = 'none';
+        };
+        
+        // Function to clean up event listeners
+        const cleanupEventListeners = () => {
+            modalOkButton.removeEventListener('click', okHandler);
+            modalCancelButton.removeEventListener('click', cancelHandler);
+            if (modalCloseButton) {
+                modalCloseButton.removeEventListener('click', cancelHandler);
+            }
+        };
+        
+        // Add event listeners
+        modalOkButton.addEventListener('click', okHandler);
+        modalCancelButton.addEventListener('click', cancelHandler);
+        if (modalCloseButton) {
+            modalCloseButton.addEventListener('click', cancelHandler);
+        }
+        
+        // Set proper button labels
+        modalOkButton.textContent = 'Logout';
+        modalCancelButton.textContent = 'Cancel';
+        
+        // Show the modal
+        modal.style.display = 'flex';
+    } catch (error) {
+        log('Error showing logout confirmation', 'error', error);
+        showErrorNotification(`Error during logout process: ${error.message}`);
+    }
+}
+
+// Function to actually perform the logout
+async function proceedWithLogout() {
+    try {
+        log('Logging out user', 'info');
+        
+        // Call the API's logout function
+        const result = await window.OpsieApi.logout();
+        if (!result || !result.success) {
+            throw new Error(result?.error || 'Failed to log out');
+        }
+        
+        log('Logout successful, updating UI', 'info');
+        showNotification('Logged out successfully');
+        
+        // Clear any UI elements that might contain user-specific data
+        const userEmailEl = document.getElementById('settings-user-email');
+        const teamNameEl = document.getElementById('settings-team-name');
+        const userRoleEl = document.getElementById('settings-user-role');
+        
+        if (userEmailEl) userEmailEl.textContent = '-';
+        if (teamNameEl) teamNameEl.textContent = '-';
+        if (userRoleEl) userRoleEl.textContent = '-';
+        
+        // Hide any team-related sections
+        hideTeamSections();
+        
+        // Clear email-related data
+        currentEmailData = null;
+        
+        // Show the authentication UI
+        const authContainer = document.getElementById('auth-container');
+        const mainContent = document.getElementById('main-content');
+        const settingsContainer = document.getElementById('settings-container');
+        
+        if (authContainer) {
+            authContainer.style.display = 'flex';
+        }
+        
+        if (mainContent) {
+            mainContent.style.display = 'none';
+        }
+        
+        // Make sure settings panel is hidden
+        if (settingsContainer) {
+            settingsContainer.style.display = 'none';
+        }
+        
+        // Reset any other UI elements
+        const teamMembersList = document.getElementById('team-members-list');
+        if (teamMembersList) {
+            teamMembersList.innerHTML = '';
+        }
+        
+        // Focus the email input field
+        const emailInput = document.getElementById('auth-email');
+        if (emailInput) {
+            setTimeout(() => {
+                emailInput.focus();
+            }, 500);
+        }
+    } catch (error) {
+        log('Error during logout process', 'error', error);
+        showErrorNotification(`Error logging out: ${error.message}`);
+    }
+}
+
+/**
+ * Shows all main UI sections that should be visible by default
+ */
+function showMainUISections() {
+    log('Showing main UI sections', 'info');
+    
+    // Get settings container ID to exclude it from general restoration
+    const settingsContainerId = 'settings-container';
+    
+    // FIRST: Restore all elements with the .section class that might have been hidden
+    // EXCEPT for the settings container
+    const allSections = document.querySelectorAll('.section');
+    allSections.forEach(section => {
+        // Skip the settings container - it should only be shown when settings are opened
+        if (section.id === settingsContainerId) {
+            section.style.display = 'none';
+            log('Keeping settings container hidden', 'info');
+            return;
+        }
+        
+        section.style.display = 'block';
+        log('Restored section with class .section: ' + (section.id || 'no-id'), 'info');
+    });
+    
+    // Then continue with specific section handling
+    // Show the email info section
+    const emailInfoSection = document.getElementById('email-info');
+    if (emailInfoSection) {
+        emailInfoSection.style.display = 'block';
+    }
+    
+    // Show summary section
+    const summarySection = document.getElementById('summary-section');
+    if (summarySection) {
+        summarySection.style.display = 'block';
+    }
+    
+    // Show contact info section
+    const contactSection = document.getElementById('contact-section');
+    if (contactSection) {
+        contactSection.style.display = 'block';
+    }
+    
+    // Show reply section
+    const replySection = document.getElementById('reply-section');
+    if (replySection) {
+        replySection.style.display = 'block';
+    }
+    
+    // Show action buttons section
+    const actionButtonsSection = document.getElementById('action-buttons-section');
+    if (actionButtonsSection) {
+        actionButtonsSection.style.display = 'block';
+    }
+    
+    // Show notes section if the email is saved
+    const notesSection = document.getElementById('notes-section');
+    if (notesSection) {
+        // Only show notes section if we have a saved email
+        if (currentEmailData && currentEmailData.existingMessage && currentEmailData.existingMessage.exists) {
+            notesSection.style.display = 'block';
+        }
+    }
+    
+    // If there are any saved/handled statuses, show those
+    const savedStatus = document.getElementById('already-saved-message');
+    if (savedStatus) {
+        if (currentEmailData && currentEmailData.existingMessage && currentEmailData.existingMessage.exists) {
+            savedStatus.style.display = 'block';
+        }
+    }
+    
+    const handlingStatus = document.getElementById('handling-status-message');
+    if (handlingStatus) {
+        if (currentEmailData && currentEmailData.existingMessage && 
+            currentEmailData.existingMessage.exists && 
+            currentEmailData.existingMessage.handling) {
+            handlingStatus.style.display = 'block';
+        }
+    }
+    
+    // Make sure settings container stays hidden
+    const settingsContainer = document.getElementById(settingsContainerId);
+    if (settingsContainer) {
+        settingsContainer.style.display = 'none';
+    }
+    
+    // Call updateNotesUIState to ensure notes UI elements are properly enabled/disabled
+    // based on whether the email is saved
+    updateNotesUIState();
+}
+
+// Function to set up event listeners for the settings panel
+function setupSettingsEventListeners() {
+    log('Setting up settings event listeners', 'info');
+    
+    // Settings button
+    const settingsButton = document.getElementById('settings-button');
+    if (settingsButton) {
+        settingsButton.addEventListener('click', showSettings);
+    }
+    
+    // Close settings button
+    const closeSettingsButton = document.getElementById('close-settings');
+    if (closeSettingsButton) {
+        closeSettingsButton.addEventListener('click', function() {
+            log('Settings closed, restoring main UI sections', 'info');
+            
+            // Hide the settings container
+            const settingsContainer = document.getElementById('settings-container');
+            if (settingsContainer) {
+                settingsContainer.style.display = 'none';
+            }
+            
+            // First, restore any existing display states that may have been saved
+            try {
+                const savedDisplayStates = JSON.parse(localStorage.getItem('sectionDisplayStates') || '{}');
+                for (const [id, displayState] of Object.entries(savedDisplayStates)) {
+                    // Skip restoring the settings container
+                    if (id === 'settings-container') continue;
+                    
+                    const element = document.getElementById(id);
+                    if (element) {
+                        element.style.display = displayState;
+                        log(`Restored saved display state for ${id}: ${displayState}`, 'info');
+                    }
+                }
+            } catch (error) {
+                log('Error restoring saved display states: ' + error.message, 'error');
+            }
+            
+            // Show all main UI sections when closing settings
+            showMainUISections();
+            
+            // Additional check for specific sections that might still be hidden
+            const emailActionsSection = document.getElementById('summary-section');
+            if (emailActionsSection && emailActionsSection.style.display === 'none') {
+                log('Forcibly showing email actions section that was still hidden', 'info');
+                emailActionsSection.style.display = 'block';
+            }
+            
+            // Final check to make sure settings container is definitely hidden
+            if (settingsContainer) {
+                settingsContainer.style.display = 'none';
+                log('Final check: Ensuring settings container is hidden', 'info');
+            }
+        });
+    }
+    
+    // Save API key button
+    const saveApiKeyButton = document.getElementById('save-api-key');
+    if (saveApiKeyButton) {
+        saveApiKeyButton.addEventListener('click', saveApiKey);
+    }
+    
+    // Edit team details button
+    const editTeamDetailsButton = document.getElementById('edit-team-details-button');
+    if (editTeamDetailsButton) {
+        editTeamDetailsButton.addEventListener('click', function() {
+            toggleTeamDetailsView();
+        });
+    }
+    
+    // Cancel edit button
+    const cancelEditButton = document.getElementById('cancel-team-edit-button');
+    if (cancelEditButton) {
+        cancelEditButton.addEventListener('click', function() {
+            toggleTeamDetailsView();
+        });
+    }
+    
+    // Save team details button
+    const saveTeamDetailsButton = document.getElementById('save-team-details-button');
+    if (saveTeamDetailsButton) {
+        saveTeamDetailsButton.addEventListener('click', handleUpdateTeamDetails);
+    }
+    
+    // Refresh requests button
+    const refreshRequestsButton = document.getElementById('refresh-requests-button');
+    if (refreshRequestsButton) {
+        refreshRequestsButton.addEventListener('click', async function() {
+            const userInfo = await window.OpsieApi.getUserInfo();
+            if (userInfo && userInfo.data && userInfo.data.teamId) {
+                await loadPendingRequests(userInfo.data.teamId);
+            }
+        });
+    }
+    
+    // Leave team button
+    const leaveTeamButton = document.getElementById('leave-team-button');
+    if (leaveTeamButton) {
+        leaveTeamButton.addEventListener('click', handleLeaveTeam);
+    }
+    
+    // Transfer admin button
+    const transferAdminButton = document.getElementById('transfer-admin-button');
+    if (transferAdminButton) {
+        transferAdminButton.addEventListener('click', handleTransferAdmin);
+    }
+    
+    // Delete team button
+    const deleteTeamButton = document.getElementById('delete-team-button');
+    if (deleteTeamButton) {
+        deleteTeamButton.addEventListener('click', handleDeleteTeam);
+    }
+    
+    // Logout button
+    const logoutButton = document.getElementById('logout-button');
+    if (logoutButton) {
+        logoutButton.addEventListener('click', handleLogout);
+    }
+}
+
+/**
+ * Updates the notes section UI based on whether an email is saved
+ * This ensures users can't add notes until the email is saved
+ */
+function updateNotesUIState() {
+    log('Updating notes UI state based on email save status', 'info');
+    
+    // Check if email is saved
+    const isEmailSaved = currentEmailData && 
+                          currentEmailData.existingMessage && 
+                          currentEmailData.existingMessage.exists;
+    
+    // Get references to notes-related UI elements
+    const notesSection = document.getElementById('notes-section');
+    const addNoteButton = document.getElementById('add-note-button');
+    const toggleNotesFormButton = document.getElementById('toggle-notes-form-button');
+    const notesForm = document.getElementById('notes-form');
+    const noteInput = document.getElementById('note-input');
+    const saveNoteButton = document.getElementById('save-note-button');
+    const cancelNoteButton = document.getElementById('cancel-note-button');
+    
+    if (notesSection) {
+        if (isEmailSaved) {
+            // If email is saved, enable notes functionality
+            notesSection.style.display = 'block';
+            
+            // Remove any warning messages
+            const warningMsg = notesSection.querySelector('.notes-warning-message');
+            if (warningMsg) {
+                warningMsg.remove();
+            }
+            
+            // Enable add note button
+            if (addNoteButton) {
+                addNoteButton.disabled = false;
+                addNoteButton.title = "Add a new note";
+            }
+            
+            // Enable toggle form button
+            if (toggleNotesFormButton) {
+                toggleNotesFormButton.disabled = false;
+            }
+            
+            // Enable note input and save button
+            if (noteInput) {
+                noteInput.disabled = false;
+            }
+            
+            if (saveNoteButton) {
+                saveNoteButton.disabled = false;
+            }
+            
+            log('Notes UI enabled - email is saved', 'info');
+        } else {
+            // If email is not saved, disable notes functionality
+            
+            // Keep the notes section visible but add a warning
+            notesSection.style.display = 'block';
+            
+            // Add warning message if it doesn't exist
+            if (!notesSection.querySelector('.notes-warning-message')) {
+                const warningMsg = document.createElement('div');
+                warningMsg.className = 'notes-warning-message';
+                warningMsg.style.color = 'red';
+                warningMsg.style.padding = '10px';
+                warningMsg.style.marginBottom = '10px';
+                warningMsg.style.backgroundColor = '#ffeeee';
+                warningMsg.style.border = '1px solid #ffaaaa';
+                warningMsg.style.borderRadius = '4px';
+                warningMsg.innerHTML = '<strong>Note:</strong> You must save the email before adding notes.';
+                
+                // Insert at the top of notes section
+                notesSection.insertBefore(warningMsg, notesSection.firstChild);
+            }
+            
+            // Hide the notes form if it's open
+            if (notesForm) {
+                notesForm.style.display = 'none';
+            }
+            
+            // Disable add note button
+            if (addNoteButton) {
+                addNoteButton.disabled = true;
+                addNoteButton.title = "Save email before adding notes";
+            }
+            
+            // Disable toggle form button
+            if (toggleNotesFormButton) {
+                toggleNotesFormButton.disabled = true;
+            }
+            
+            // Disable note input and save button
+            if (noteInput) {
+                noteInput.disabled = true;
+            }
+            
+            if (saveNoteButton) {
+                saveNoteButton.disabled = true;
+            }
+            
+            log('Notes UI disabled - email is not saved', 'info');
+        }
+    } else {
+        log('Notes section not found', 'warning');
+    }
+}
+
+/**
+ * Handles extracting questions from the current email
+ */
+async function handleExtractQuestions() {
+    try {
+        log('Extract questions button clicked', 'info');
+        
+        // Check if we have the current email data
+        if (!currentEmailData) {
+            log('No email data available for question extraction', 'error');
+            window.OpsieApi.showNotification('Please load an email before extracting questions.', 'error');
+            return;
+        }
+        
+        // Check if email has content
+        if (!currentEmailData.body) {
+            log('Email has no content for question extraction', 'error');
+            window.OpsieApi.showNotification('Email content is missing or empty.', 'error');
+            return;
+        }
+        
+        // Get team ID for saving Q&A
+        const teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID available for Q&A operations', 'warning');
+            window.OpsieApi.showNotification('Team information is not available. Some Q&A features may be limited.', 'warning');
+            // Continue anyway as we can still extract questions
+        }
+        
+        // Show the QA container and set its initial state
+        const qaContainer = document.getElementById('qa-container');
+        if (qaContainer) {
+            qaContainer.style.display = 'block';
+        }
+        
+        // Clear previous questions
+        const qaList = document.getElementById('qa-list');
+        if (qaList) {
+            qaList.innerHTML = '';
+        }
+        
+        // Show the loading spinner - add null check
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'block';
+        } else {
+            log('Warning: qa-loading-spinner element not found', 'warning');
+        }
+        
+        // Hide no questions message - add null check
+        const noQuestionsMsg = document.getElementById('no-questions-message');
+        if (noQuestionsMsg) {
+            noQuestionsMsg.style.display = 'none';
+        } else {
+            log('Warning: no-questions-message element not found', 'warning');
+        }
+        
+        // Call the API to extract questions and find answers
+        const result = await window.OpsieApi.extractQuestionsAndAnswers(currentEmailData);
+        
+        log('Question extraction result:', 'info', result);
+        
+        // Check for errors
+        if (!result.success) {
+            log('Failed to extract questions', 'error', result.error);
+            window.OpsieApi.showNotification(`Failed to extract questions: ${result.error}`, 'error');
+            
+            // Hide loading spinner - add null check
+            if (loadingSpinner) {
+                loadingSpinner.style.display = 'none';
+            }
+            
+            // Show the no questions message - add null check
+            if (noQuestionsMsg) {
+                noQuestionsMsg.style.display = 'block';
+            }
+            return;
+        }
+        
+        // If no questions were found
+        if (!result.questions || result.questions.length === 0) {
+            log('No questions found in the email', 'info');
+            window.OpsieApi.showNotification('No questions were found in this email.', 'info');
+            
+            // Hide loading spinner - add null check
+            if (loadingSpinner) {
+                loadingSpinner.style.display = 'none';
+            }
+            
+            // Show the no questions message - add null check
+            if (noQuestionsMsg) {
+                noQuestionsMsg.style.display = 'block';
+            }
+            return;
+        }
+        
+        // Display the extracted questions
+        displayQuestions(result.questions);
+        
+        // Save any questions that have answers but no answerId (meaning they weren't saved to DB yet)
+        // This is a fallback in case the automatic saving in extractQuestionsAndAnswers failed
+        if (teamId) {
+            let savedCount = 0;
+            for (const question of result.questions) {
+                if (question.answer && !question.answerId) {
+                    try {
+                        log('Saving question with answer to database', 'info', {
+                            question: question.text,
+                            hasAnswer: !!question.answer
+                        });
+                        
+                        // Collect keywords from both the original question and the search
+                        const keywords = [
+                            ...(question.keywords || []),
+                            ...(question.searchKeywords || [])
+                        ];
+                        
+                        const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                            question.text,
+                            question.answer,
+                            question.references || [],
+                            teamId,
+                            keywords
+                        );
+                        
+                        if (saveResult.success) {
+                            question.answerId = saveResult.id;
+                            savedCount++;
+                            log('Saved Q&A to database', 'info', { id: saveResult.id });
+                        } else {
+                            log('Failed to save Q&A to database', 'warning', saveResult.error);
+                        }
+                    } catch (saveError) {
+                        log('Error saving Q&A to database', 'error', saveError);
+                    }
+                }
+            }
+            
+            if (savedCount > 0) {
+                log(`Saved ${savedCount} Q&A pairs to database`, 'info');
+            }
+        }
+        
+        // Show success notification
+        window.OpsieApi.showNotification(`Found ${result.questions.length} question${result.questions.length === 1 ? '' : 's'} in the email.`, 'success');
+    } catch (error) {
+        log('Exception in handleExtractQuestions', 'error', error);
+        window.OpsieApi.showNotification(`Error extracting questions: ${error.message}`, 'error');
+        
+        // Hide loading spinner - add null check
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'none';
+        }
+        
+        // Show the no questions message - add null check
+        const noQuestionsMsg = document.getElementById('no-questions-message');
+        if (noQuestionsMsg) {
+            noQuestionsMsg.style.display = 'block';
+        }
+    }
+}
+
+/**
+ * Displays the extracted questions in the UI
+ * @param {Array} questions - Array of question objects
+ */
+function displayQuestions(questions) {
+    try {
+        log('Displaying questions', 'info', questions);
+        
+        const qaList = document.getElementById('qa-list');
+        if (!qaList) {
+            log('Q&A list element not found', 'error');
+            return;
+        }
+        
+        // Clear existing questions
+        qaList.innerHTML = '';
+        
+        // Sort questions by confidence (highest first)
+        questions.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+        
+        // Add each question to the list
+        questions.forEach((question, index) => {
+            // Create the question item container
+            const questionItem = document.createElement('div');
+            questionItem.className = 'question-item';
+            questionItem.id = `question-${index}`;
+            
+            // Create question header with text and confidence
+            const questionHeader = document.createElement('div');
+            questionHeader.className = 'question-header';
+            
+            // Question text
+            const questionText = document.createElement('div');
+            questionText.className = 'question-text';
+            questionText.textContent = question.text;
+            questionHeader.appendChild(questionText);
+            
+            // Question confidence
+            if (question.confidence) {
+                const confidenceLevel = question.confidence >= 0.8 ? 'high' : 
+                                       (question.confidence >= 0.5 ? 'medium' : 'low');
+                                       
+                const confidenceIndicator = document.createElement('div');
+                confidenceIndicator.className = `question-confidence ${confidenceLevel}`;
+                confidenceIndicator.textContent = 
+                    confidenceLevel.charAt(0).toUpperCase() + confidenceLevel.slice(1);
+                questionHeader.appendChild(confidenceIndicator);
+            }
+            
+            // Add header to question item
+            questionItem.appendChild(questionHeader);
+            
+            // Create answer container
+            const answerContainer = document.createElement('div');
+            answerContainer.className = 'answer-container';
+            
+            // Check if we have an answer
+            if (question.answer) {
+                // Create answer text element
+                const answerText = document.createElement('div');
+                answerText.className = 'answer-text';
+                answerText.textContent = question.answer;
+                answerContainer.appendChild(answerText);
+                
+                // If we have references, add them
+                if (question.references && question.references.length > 0) {
+                    const referencesContainer = document.createElement('div');
+                    referencesContainer.className = 'answer-references';
+                    
+                    // Add title
+                    const referencesTitle = document.createElement('div');
+                    referencesTitle.className = 'references-title';
+                    referencesTitle.textContent = 'References:';
+                    referencesContainer.appendChild(referencesTitle);
+                    
+                    // Add each reference
+                    question.references.forEach(reference => {
+                        const referenceItem = document.createElement('div');
+                        referenceItem.className = 'reference-item';
+                        
+                        // Format the reference
+                        let referenceText = '';
+                        if (reference.source) referenceText += `From: ${reference.source}`;
+                        if (reference.date) referenceText += ` - ${new Date(reference.date).toLocaleDateString()}`;
+                        if (reference.quote) referenceText += `\n"${reference.quote}"`;
+                        
+                        referenceItem.textContent = referenceText;
+                        referencesContainer.appendChild(referenceItem);
+                    });
+                    
+                    answerContainer.appendChild(referencesContainer);
+                }
+                
+                // Add verification status and buttons
+                const actionButtons = document.createElement('div');
+                actionButtons.className = 'answer-actions';
+                
+                // Verify button
+                const verifyButton = document.createElement('button');
+                verifyButton.className = 'verify-answer-button';
+                verifyButton.textContent = question.verified ? 'Verified ✓' : 'Verify';
+                if (question.verified) {
+                    verifyButton.classList.add('verified');
+                    verifyButton.disabled = true;
+                } else {
+                    verifyButton.onclick = () => verifyAnswer(index, question);
+                }
+                actionButtons.appendChild(verifyButton);
+                
+                // Edit button
+                const editButton = document.createElement('button');
+                editButton.className = 'edit-answer-button';
+                editButton.textContent = 'Edit';
+                editButton.onclick = () => editAnswer(index, question);
+                actionButtons.appendChild(editButton);
+                
+                answerContainer.appendChild(actionButtons);
+            } else {
+                // No answer found
+                const noAnswerMessage = document.createElement('div');
+                noAnswerMessage.className = 'no-answer-message';
+                noAnswerMessage.textContent = 'No answer found in available emails.';
+                answerContainer.appendChild(noAnswerMessage);
+                
+                // Add button to add an answer manually
+                const addAnswerButton = document.createElement('button');
+                addAnswerButton.className = 'add-answer-button';
+                addAnswerButton.textContent = 'Add Answer';
+                addAnswerButton.onclick = () => addAnswer(index, question);
+                answerContainer.appendChild(addAnswerButton);
+            }
+            
+            questionItem.appendChild(answerContainer);
+            
+            // Add the complete question item to the list
+            qaList.appendChild(questionItem);
+        });
+        
+        // Hide loading spinner - add null check
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'none';
+        } else {
+            log('Warning: qa-loading-spinner element not found', 'warning');
+        }
+        
+        // Show container if there are questions - add null checks
+        if (questions.length > 0) {
+            const qaContainer = document.getElementById('qa-container');
+            if (qaContainer) {
+                qaContainer.style.display = 'block';
+            }
+            
+            const noQuestionsMsg = document.getElementById('no-questions-message');
+            if (noQuestionsMsg) {
+                noQuestionsMsg.style.display = 'none';
+            }
+        } else {
+            const noQuestionsMsg = document.getElementById('no-questions-message');
+            if (noQuestionsMsg) {
+                noQuestionsMsg.style.display = 'block';
+            }
+        }
+    } catch (error) {
+        log('Exception in displayQuestions', 'error', error);
+        
+        // Hide loading spinner - add null check
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'none';
+        }
+    }
+}
+
+/**
+ * Verify an answer as correct
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+async function verifyAnswer(index, question) {
+    try {
+        log('Verifying answer', 'info', { index, question });
+        
+        // Update the UI
+        const verifyButton = document.querySelector(`#question-${index} .verify-answer-button`);
+        if (verifyButton) {
+            verifyButton.textContent = 'Verified ✓';
+            verifyButton.classList.add('verified');
+            verifyButton.disabled = true;
+        }
+        
+        // Update question object
+        question.verified = true;
+        
+        // If we have an answer ID, update the verification status in the database
+        if (question.answerId) {
+            try {
+                // Call API to update the verification status
+                const updateResult = await apiRequest(
+                    `qanda?id=eq.${question.answerId}`,
+                    'PATCH',
+                    { is_verified: true }
+                );
+                
+                if (updateResult.success) {
+                    log('Updated verification status in database', 'info', updateResult.data);
+                    window.OpsieApi.showNotification('Answer verified and saved to database', 'success');
+                } else {
+                    log('Failed to update verification status in database', 'error', updateResult.error);
+                    window.OpsieApi.showNotification('Answer marked as verified in UI, but failed to update database', 'warning');
+                }
+            } catch (dbError) {
+                log('Database error updating verification status', 'error', dbError);
+                window.OpsieApi.showNotification('Answer marked as verified in UI, but failed to update database', 'warning');
+            }
+        } else {
+            // No answer ID means we need to save this as a new Q&A pair
+            log('No answer ID available, saving as new verified Q&A pair', 'warning');
+            
+            // Get team ID
+            const teamId = localStorage.getItem('currentTeamId');
+            if (teamId) {
+                // Collect keywords
+                const keywords = [
+                    ...(question.keywords || []),
+                    ...(question.searchKeywords || [])
+                ];
+                
+                try {
+                    const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                        question.text,
+                        question.answer,
+                        question.references || [],
+                        teamId,
+                        keywords,
+                        true // Mark as verified
+                    );
+                    
+                    if (saveResult.success) {
+                        question.answerId = saveResult.id;
+                        log('Saved verified Q&A to database', 'info', { id: saveResult.id });
+                        window.OpsieApi.showNotification('Answer verified and saved to database', 'success');
+                    } else {
+                        log('Error saving verified Q&A to database', 'error', saveResult.error);
+                        window.OpsieApi.showNotification('Answer marked as verified in UI, but failed to save to database', 'warning');
+                    }
+                } catch (saveError) {
+                    log('Exception saving verified Q&A to database', 'error', saveError);
+                    window.OpsieApi.showNotification('Answer marked as verified in UI, but failed to save to database', 'warning');
+                }
+            } else {
+                log('No team ID available for saving verified Q&A', 'error');
+                window.OpsieApi.showNotification('Answer marked as verified in UI, but could not save to database - missing team ID', 'warning');
+            }
+        }
+    } catch (error) {
+        log('Exception in verifyAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error verifying answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Edit an answer
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function editAnswer(index, question) {
+    try {
+        log('Editing answer', 'info', { index, question });
+        
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer) {
+            log('Answer container not found', 'error');
+            return;
+        }
+        
+        // Get the current answer text
+        const currentAnswerText = question.answer || '';
+        
+        // Create edit form
+        const editForm = document.createElement('div');
+        editForm.className = 'answer-edit-form';
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.className = 'answer-edit-textarea';
+        textarea.value = currentAnswerText;
+        editForm.appendChild(textarea);
+        
+        // Create buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.className = 'edit-action-buttons';
+        
+        // Create save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'save-answer-button';
+        saveButton.textContent = 'Save';
+        saveButton.onclick = () => saveEditedAnswer(index, question, textarea.value);
+        buttonsContainer.appendChild(saveButton);
+        
+        // Create cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'cancel-edit-button';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.onclick = () => cancelEdit(index, question);
+        buttonsContainer.appendChild(cancelButton);
+        
+        editForm.appendChild(buttonsContainer);
+        
+        // Store the original content and replace with edit form
+        answerContainer.dataset.originalContent = answerContainer.innerHTML;
+        answerContainer.innerHTML = '';
+        answerContainer.appendChild(editForm);
+        
+        // Focus the textarea
+        textarea.focus();
+    } catch (error) {
+        log('Exception in editAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error editing answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Save an edited answer
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ * @param {string} newAnswer - The new answer text
+ */
+async function saveEditedAnswer(index, question, newAnswer) {
+    try {
+        log('Saving edited answer', 'info', { index, question, newAnswer });
+        
+        // Update the question object
+        question.answer = newAnswer;
+        
+        // If we have an answer ID, update the answer in the database
+        if (question.answerId) {
+            try {
+                // Call API to update the answer
+                const updateResult = await apiRequest(
+                    `qanda?id=eq.${question.answerId}`,
+                    'PATCH',
+                    { 
+                        answer_text: newAnswer,
+                        last_updated_by: await getUserId()
+                    }
+                );
+                
+                if (updateResult.success) {
+                    log('Updated answer in database', 'info', updateResult.data);
+                } else {
+                    log('Failed to update answer in database', 'error', updateResult.error);
+                }
+            } catch (dbError) {
+                log('Database error updating answer', 'error', dbError);
+                // Continue even if the database update fails - at least the UI is updated
+            }
+        } else {
+            log('No answer ID available for answer update - creating new entry', 'warning');
+            
+            // Get team ID
+            const teamId = localStorage.getItem('currentTeamId');
+            if (teamId) {
+                // Save as a new answer
+                const keywords = [
+                    ...(question.keywords || []),
+                    ...(question.searchKeywords || [])
+                ];
+                
+                try {
+                    const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                        question.text,
+                        newAnswer,
+                        [],  // No references for user-edited answers
+                        teamId,
+                        keywords
+                    );
+                    
+                    if (saveResult.success) {
+                        question.answerId = saveResult.id;
+                        log('Saved edited answer as new Q&A entry', 'info', { id: saveResult.id });
+                    } else {
+                        log('Error saving edited answer as new entry', 'warning', saveResult.error);
+                    }
+                } catch (saveError) {
+                    log('Exception saving edited answer as new entry', 'error', saveError);
+                }
+            } else {
+                log('No team ID available for saving edited answer', 'error');
+            }
+        }
+        
+        // Re-render the question
+        const questionElement = document.getElementById(`question-${index}`);
+        if (questionElement) {
+            const parent = questionElement.parentNode;
+            parent.removeChild(questionElement);
+            
+            // Re-display all questions
+            const questions = [];
+            for (let i = 0; i < parent.childElementCount + 1; i++) {
+                const qElement = document.getElementById(`question-${i}`);
+                if (qElement) {
+                    const qData = window.OpsieApi.extractQuestionsAndAnswers.questions[i];
+                    if (qData) {
+                        questions.push(qData);
+                    }
+                }
+            }
+            
+            displayQuestions(questions);
+        }
+        
+        // Show notification
+        window.OpsieApi.showNotification('Answer updated successfully!', 'success');
+    } catch (error) {
+        log('Exception in saveEditedAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error saving answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Cancel editing an answer
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function cancelEdit(index, question) {
+    try {
+        log('Canceling answer edit', 'info', { index, question });
+        
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer || !answerContainer.dataset.originalContent) {
+            log('Original answer content not found', 'error');
+            return;
+        }
+        
+        // Restore the original content
+        answerContainer.innerHTML = answerContainer.dataset.originalContent;
+        delete answerContainer.dataset.originalContent;
+    } catch (error) {
+        log('Exception in cancelEdit', 'error', error);
+        window.OpsieApi.showNotification(`Error canceling edit: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Add an answer to a question that doesn't have one
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function addAnswer(index, question) {
+    try {
+        log('Adding answer', 'info', { index, question });
+        
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer) {
+            log('Answer container not found', 'error');
+            return;
+        }
+        
+        // Create edit form
+        const editForm = document.createElement('div');
+        editForm.className = 'answer-edit-form';
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.className = 'answer-edit-textarea';
+        textarea.placeholder = 'Enter your answer here...';
+        editForm.appendChild(textarea);
+        
+        // Create buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.className = 'edit-action-buttons';
+        
+        // Create save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'save-answer-button';
+        saveButton.textContent = 'Save';
+        saveButton.onclick = () => saveNewAnswer(index, question, textarea.value);
+        buttonsContainer.appendChild(saveButton);
+        
+        // Create cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'cancel-edit-button';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.onclick = () => cancelEdit(index, question);
+        buttonsContainer.appendChild(cancelButton);
+        
+        editForm.appendChild(buttonsContainer);
+        
+        // Store the original content and replace with edit form
+        answerContainer.dataset.originalContent = answerContainer.innerHTML;
+        answerContainer.innerHTML = '';
+        answerContainer.appendChild(editForm);
+        
+        // Focus the textarea
+        textarea.focus();
+    } catch (error) {
+        log('Exception in addAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error adding answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Save a new answer
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ * @param {string} newAnswer - The new answer text
+ */
+async function saveNewAnswer(index, question, newAnswer) {
+    try {
+        log('Saving new answer', 'info', { index, question, newAnswer });
+        
+        // Validate input
+        if (!newAnswer || newAnswer.trim().length === 0) {
+            window.OpsieApi.showNotification('Please enter an answer before saving.', 'error');
+            return;
+        }
+        
+        // Update the question object
+        question.answer = newAnswer;
+        question.verified = true;  // User-provided answers are automatically verified
+        question.references = [];
+        
+        // Get team ID
+        const teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID available for saving answer', 'error');
+            window.OpsieApi.showNotification('Team information is not available. Could not save answer.', 'error');
+            return;
+        }
+        
+        // Gather keywords from the question if available
+        const keywords = [
+            ...(question.keywords || []),
+            ...(question.searchKeywords || [])
+        ];
+        
+        // Save to database
+        try {
+            const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                question.text,
+                newAnswer,
+                [],  // No references for user-added answers
+                teamId,
+                keywords,
+                true  // Mark as verified since it's user-provided
+            );
+            
+            if (saveResult.success) {
+                question.answerId = saveResult.id;
+                log('Saved new answer to database', 'info', { id: saveResult.id });
+                
+                // Re-render the question
+                const questionElement = document.getElementById(`question-${index}`);
+                if (questionElement) {
+                    const parent = questionElement.parentNode;
+                    parent.removeChild(questionElement);
+                    
+                    // Re-display all questions
+                    const questions = [];
+                    for (let i = 0; i < parent.childElementCount + 1; i++) {
+                        const qElement = document.getElementById(`question-${i}`);
+                        if (qElement) {
+                            const qData = window.OpsieApi.extractQuestionsAndAnswers.questions[i];
+                            if (qData) {
+                                questions.push(qData);
+                            }
+                        }
+                    }
+                    
+                    displayQuestions(questions);
+                }
+                
+                // Show success notification
+                window.OpsieApi.showNotification('Answer saved successfully!', 'success');
+            } else {
+                log('Error saving answer to database', 'error', saveResult.error);
+                window.OpsieApi.showNotification(`Error saving answer: ${saveResult.error}`, 'error');
+            }
+        } catch (saveError) {
+            log('Exception saving answer to database', 'error', saveError);
+            window.OpsieApi.showNotification(`Error saving answer: ${saveError.message}`, 'error');
+        }
+    } catch (error) {
+        log('Exception in saveNewAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error saving answer: ${error.message}`, 'error');
+    }
+}
+    

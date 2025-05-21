@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "Opsie Email Assistant",
+  "version": "1.0.0",
+  "description": "Enhance your email experience with smart summaries, contact history, and reply suggestions",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "identity"
+  ],
+  "host_permissions": [
+    "*://mail.google.com/*",
+    "*://outlook.office.com/*",
+    "*://outlook.live.com/*",
+    "https://vewnmfmnvumupdrcraay.supabase.co/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://mail.google.com/*",
+        "*://outlook.office.com/*",
+        "*://outlook.live.com/*"
+      ],
+      "js": ["content/content.js"],
+      "css": ["content/content.css"],
+      "type": "module"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/*",
+        "sidebar/*",
+        "utils/*.js",
+        "popup/popup.html"
+      ],
+      "matches": [
+        "*://mail.google.com/*",
+        "*://outlook.office.com/*",
+        "*://outlook.live.com/*",
+        "https://vewnmfmnvumupdrcraay.supabase.co/*"
+      ]
+    }
+  ]
+} 

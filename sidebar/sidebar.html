@@ -1,0 +1,1190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Opsie Email Assistant</title>
+  <style>
+    /* Import Poppins font */
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Poppins', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f8f9fa;
+      color: #333;
+      overflow-x: hidden;
+    }
+    
+    .sidebar-header {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    
+    .sidebar-header h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    
+    .close-button {
+      background: none;
+      border: none;
+      color: white;
+      font-size: 22px;
+      cursor: pointer;
+      opacity: 0.8;
+      transition: all 0.2s ease;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+    }
+    
+    .close-button:hover {
+      opacity: 1;
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+    
+    .sidebar-content {
+      padding: 15px;
+      max-height: calc(100vh - 60px);
+      overflow-y: auto;
+      background: linear-gradient(160deg, rgba(230, 240, 250, 0.6) 0%, rgba(240, 245, 250, 0.8) 100%);
+    }
+    
+    /* Card-style containers for all sections */
+    .email-info,
+    .section,
+    .notes-section,
+    #reply-preview-container,
+    #email-search-results {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+    }
+    
+    /* Heading styles for all sections */
+    .email-info h3,
+    .section h2,
+    .notes-header h3,
+    .section-title {
+      margin-top: 0;
+      margin-bottom: 12px;
+      color: #1a3d5c;
+      font-size: 16px;
+      font-weight: 600;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #eef2f7;
+    }
+    
+    /* Content text */
+    .email-info p,
+    .section p {
+      margin: 10px 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    
+    /* Email sender/subject styling */
+    .email-sender, .email-timestamp {
+      font-size: 13px;
+      color: #666;
+      margin: 5px 0;
+    }
+    
+    .email-sender {
+      font-weight: 500;
+      color: #1a3d5c;
+    }
+    
+    /* Action buttons */
+    .action-button {
+      width: 100%;
+      padding: 12px 15px;
+      border: none;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      font-weight: 500;  /* Slightly reduced for Poppins */
+      font-size: 14px;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      position: relative;
+      overflow: hidden;
+      color: white !important; /* Ensure text is always white */
+      letter-spacing: 0.3px;
+    }
+    
+    /* Button hover effect with subtle scale */
+    .action-button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+    }
+    
+    /* Button active/click effect */
+    .action-button:active:not(:disabled) {
+      transform: translateY(1px);
+      box-shadow: 0 2px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .action-button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    
+    /* Custom button styles with gradients and consistent hover effects */
+    button[id="generate-contact-button"] {
+      background: linear-gradient(135deg, #8e44ad 0%, #9b59b6 100%);
+      color: white;
+    }
+    
+    button[id="generate-contact-button"]:hover:not(:disabled) {
+      background: linear-gradient(135deg, #7d3c98 0%, #8e44ad 100%);
+      box-shadow: 0 4px 8px rgba(142, 68, 173, 0.3);
+    }
+    
+    button[id="generate-summary-button"] {
+      background: linear-gradient(135deg, #e67e22 0%, #f39c12 100%);
+      color: white;
+    }
+    
+    button[id="generate-summary-button"]:hover:not(:disabled) {
+      background: linear-gradient(135deg, #d35400 0%, #e67e22 100%);
+      box-shadow: 0 4px 8px rgba(230, 126, 34, 0.3);
+    }
+    
+    button[id="save-email-button"] {
+      background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+      color: white;
+    }
+    
+    button[id="save-email-button"]:hover:not(:disabled) {
+      background: linear-gradient(135deg, #219653 0%, #27ae60 100%);
+      box-shadow: 0 4px 8px rgba(39, 174, 96, 0.3);
+    }
+    
+    button[id="mark-handled-button"] {
+      background: linear-gradient(135deg, #ff9800 0%, #ffa726 100%);
+      color: white;
+    }
+    
+    button[id="mark-handled-button"]:hover:not(:disabled) {
+      background: linear-gradient(135deg, #f57c00 0%, #ff9800 100%);
+      box-shadow: 0 4px 8px rgba(255, 152, 0, 0.3);
+    }
+    
+    button[id="mark-handled-button"]:disabled {
+      background: linear-gradient(135deg, #bdbdbd 0%, #e0e0e0 100%);
+      color: white;
+    }
+    
+    button[id="generate-reply-button"] {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+    }
+    
+    button[id="generate-reply-button"]:hover:not(:disabled) {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+      box-shadow: 0 4px 8px rgba(26, 61, 92, 0.3);
+    }
+    
+    button[id="add-note-button"] {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      padding: 8px 15px;
+      font-size: 13px;
+      border-radius: 4px;
+    }
+    
+    button[id="add-note-button"]:hover {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+    }
+    
+    /* Style for toggle notes button */
+    .toggle-notes-button {
+      background: linear-gradient(135deg, #5f7d95 0%, #7b96ab 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 7px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      font-weight: 500;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .toggle-notes-button:hover {
+      background: linear-gradient(135deg, #4c6a82 0%, #5f7d95 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 3px 6px rgba(95, 125, 149, 0.2);
+    }
+    
+    .toggle-notes-button:active {
+      transform: translateY(1px);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Status messages */
+    .status-message {
+      padding: 12px 15px;
+      margin: 15px 0;
+      border-radius: 6px;
+      font-size: 14px;
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .status-success {
+      background-color: #e3f8e9;
+      color: #1e8449;
+      border-left: 4px solid #27ae60;
+    }
+    
+    .status-error {
+      background-color: #fae7e6;
+      color: #c0392b;
+      border-left: 4px solid #e74c3c;
+    }
+    
+    .status-info {
+      background-color: #e3f2fd;
+      color: #1565c0;
+      border-left: 4px solid #2196f3;
+    }
+    
+    /* Search input styles */
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 10px;
+      transition: all 0.2s ease;
+      box-sizing: border-box;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    input[type="text"]:focus {
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+      outline: none;
+    }
+    
+    /* Section headings */
+    h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 12px;
+    }
+    
+    /* Summary and contact lists */
+    .summary-list, .contact-list {
+      padding-left: 20px;
+      margin: 10px 0;
+    }
+    
+    .summary-list li, .contact-list li {
+      margin-bottom: 8px;
+      line-height: 1.4;
+      font-size: 14px;
+      padding: 4px 0;
+    }
+    
+    /* Email Summary Section with bullet styling */
+    .email-summary {
+      margin-bottom: 20px;
+    }
+    
+    .email-summary ul {
+      list-style-type: none;
+      padding-left: 0;
+    }
+    
+    .email-summary li {
+      position: relative;
+      padding-left: 22px;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    
+    .email-summary li::before {
+      content: "•";
+      position: absolute;
+      left: 8px;
+      color: #1a3d5c;
+      font-weight: bold;
+      font-size: 16px;
+    }
+    
+    /* Email Urgency Section */
+    .email-urgency {
+      margin-bottom: 20px;
+    }
+    
+    .urgency-scale {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: #666;
+    }
+    
+    /* Urgency meter styling */
+    .urgency-container {
+      margin-top: 15px;
+    }
+    
+    .urgency-meter {
+      height: 8px;
+      background-color: #f0f0f0;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 5px;
+      margin-bottom: 8px;
+    }
+    
+    .urgency-fill {
+      height: 100%;
+      background-color: #e0e0e0;
+      transition: width 0.3s ease, background-color 0.3s ease;
+    }
+    
+    /* Generate Email Reply Section */
+    .reply-section {
+      margin-bottom: 20px;
+    }
+    
+    /* Reply options */
+    .reply-options {
+      margin-top: 15px;
+      margin-bottom: 20px;
+    }
+    
+    .reply-options label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    
+    .reply-row {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 12px;
+    }
+    
+    .reply-option {
+      flex: 1;
+    }
+    
+    /* Dropdown styling */
+    .reply-options select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      background-color: white;
+      color: #333;
+      appearance: none;
+      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a3d5c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      background-size: 15px;
+      transition: all 0.2s ease;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .reply-options select:focus {
+      outline: none;
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+    }
+    
+    /* Notes styling */
+    .notes-section {
+      border-left: 4px solid #2c5282;
+      margin-bottom: 25px;
+    }
+    
+    /* Notes header with flexbox layout */
+    .notes-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    
+    .notes-header h3 {
+      margin: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+    
+    /* Notes form container */
+    #notes-form-container {
+      background-color: #f8fbfd;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid #e3e9f0;
+      transition: all 0.3s ease;
+    }
+    
+    #note-body {
+      width: 100%;
+      min-height: 80px;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      resize: vertical;
+      font-family: 'Poppins', sans-serif;
+      font-size: 14px;
+      margin-bottom: 10px;
+      transition: all 0.2s ease;
+      box-sizing: border-box;
+    }
+    
+    #note-body:focus {
+      outline: none;
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+    }
+    
+    #note-category {
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      background-color: white;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    /* Add note button styling */
+    #add-note-button {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 15px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      font-weight: 500;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    #add-note-button:hover {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 3px 6px rgba(26, 61, 92, 0.2);
+    }
+    
+    #add-note-button:active {
+      transform: translateY(1px);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
+    #notes-container {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0;
+    }
+    
+    .no-notes-message {
+      padding: 20px 15px;
+      text-align: center;
+      color: #777;
+      font-style: italic;
+      font-size: 14px;
+    }
+    
+    /* Thread container styling */
+    .thread-container {
+      margin-top: 15px;
+    }
+    
+    .thread-toggle {
+      background-color: #f5f8fa;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #1a3d5c;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      width: 100%;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .thread-toggle::after {
+      content: "▼";
+      font-size: 10px;
+      transform: rotate(-90deg);
+      transition: transform 0.2s ease;
+      margin-left: 5px;
+    }
+    
+    .thread-toggle.expanded::after {
+      transform: rotate(0);
+    }
+    
+    .thread-toggle:hover {
+      background-color: #f0f4f8;
+    }
+    
+    .thread-history {
+      border: 1px solid #eee;
+      border-radius: 6px;
+      margin-top: 10px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    
+    .thread-message {
+      padding: 10px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    
+    .thread-message:last-child {
+      border-bottom: none;
+    }
+    
+    .thread-message-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-bottom: 5px;
+    }
+    
+    .thread-message-date {
+      color: #888;
+      font-size: 12px;
+    }
+    
+    .thread-message-content {
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: #bbb;
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: #999;
+    }
+    
+    /* Reply preview container */
+    #reply-preview-container {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 15px 0;
+      border: 1px solid #ddd;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    
+    #reply-preview {
+      white-space: pre-wrap;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 10px;
+      background-color: #f9f9fa;
+      border-radius: 6px;
+      border: 1px solid #eee;
+      margin-bottom: 10px;
+    }
+    
+    #copy-reply-button {
+      background: linear-gradient(135deg, #607d8b 0%, #78909c 100%);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.3s ease;
+      display: block;
+      margin-left: auto;
+      font-weight: 500;
+      font-family: 'Poppins', sans-serif;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    
+    #copy-reply-button:hover {
+      background: linear-gradient(135deg, #546e7a 0%, #607d8b 100%);
+      box-shadow: 0 3px 6px rgba(96, 125, 139, 0.3);
+      transform: translateY(-1px);
+    }
+    
+    #copy-reply-button:active {
+      transform: translateY(1px);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Reply options */
+    .reply-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    
+    .reply-option-group {
+      margin-bottom: 10px;
+    }
+    
+    .reply-option-group label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 5px;
+      color: #555;
+      font-weight: 500;
+    }
+    
+    .reply-option-group select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      background-color: white;
+      font-family: 'Poppins', sans-serif;
+      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231a3d5c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      background-size: 15px;
+      padding-right: 30px;
+      appearance: none;
+    }
+    
+    .reply-option-group select:focus {
+      outline: none;
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+    }
+    
+    /* Action buttons container - add spacing */
+    .action-buttons {
+      margin-bottom: 20px;
+      margin-top: 5px;
+    }
+    
+    /* Add style for email search button */
+    #email-search-button {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      margin-top: 5px;
+    }
+    
+    #email-search-button:hover:not(:disabled) {
+      background: linear-gradient(135deg, #142f47 0%, #1a3d5c 100%);
+      box-shadow: 0 4px 8px rgba(26, 61, 92, 0.3);
+    }
+    
+    /* Search results styling */
+    #email-search-results {
+      background-color: white;
+      border-radius: 8px;
+      padding: 15px;
+      margin-top: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-left: 4px solid #1a3d5c;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    
+    .search-answer {
+      margin-bottom: 15px;
+      color: #333;
+    }
+    
+    .search-references {
+      border-top: 1px solid #eee;
+      padding-top: 10px;
+      margin-top: 10px;
+    }
+    
+    .reference-item {
+      margin-bottom: 12px;
+      padding-left: 5px;
+      border-left: 2px solid #ddd;
+      padding-bottom: 8px;
+    }
+    
+    .reference-quote {
+      margin-bottom: 5px;
+      color: #444;
+      line-height: 1.5;
+    }
+    
+    .reference-meta {
+      font-size: 12px;
+      color: #777;
+      font-style: italic;
+    }
+    
+    .search-no-info {
+      padding: 10px;
+      text-align: center;
+      background-color: #f9f9fa;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    
+    /* Handling modal styles */
+    #custom-modal-backdrop {
+      display: none; /* Hidden by default */
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(3px);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .custom-modal {
+      background-color: white;
+      border-radius: 8px;
+      width: 90%;
+      max-width: 400px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      animation: modalFadeIn 0.3s ease;
+      overflow: hidden;
+    }
+    
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: translateY(-20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .custom-modal-header {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      padding: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .custom-modal-header h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 500;
+      color: white;
+    }
+    
+    .custom-modal-close {
+      background: none;
+      border: none;
+      color: white;
+      font-size: 20px;
+      cursor: pointer;
+      opacity: 0.8;
+      width: 25px;
+      height: 25px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: all 0.2s ease;
+    }
+    
+    .custom-modal-close:hover {
+      opacity: 1;
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+    
+    .custom-modal-body {
+      padding: 20px;
+    }
+    
+    .custom-modal-input {
+      width: 100%;
+      min-height: 80px;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      resize: vertical;
+      font-family: 'Poppins', sans-serif;
+      font-size: 14px;
+      transition: all 0.2s ease;
+      box-sizing: border-box;
+      margin-top: 10px;
+    }
+    
+    .custom-modal-input:focus {
+      outline: none;
+      border-color: #1a3d5c;
+      box-shadow: 0 0 0 2px rgba(26, 61, 92, 0.1);
+    }
+    
+    .custom-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 15px;
+      background-color: #f8f9fa;
+      border-top: 1px solid #eaeaea;
+    }
+    
+    .custom-modal-button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: 'Poppins', sans-serif;
+    }
+    
+    .custom-modal-cancel {
+      background-color: #f5f5f5;
+      color: #555;
+      border: 1px solid #ddd;
+      margin-right: 10px;
+    }
+    
+    .custom-modal-cancel:hover {
+      background-color: #e9e9e9;
+    }
+    
+    .custom-modal-ok {
+      background: linear-gradient(135deg, #1a3d5c 0%, #2c5282 100%);
+      color: white;
+      border: none;
+    }
+    
+    .custom-modal-ok:hover {
+      box-shadow: 0 2px 5px rgba(26, 61, 92, 0.2);
+    }
+    
+    /* Fix for the modal appearing at the bottom */
+    .custom-modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1000;
+    }
+    
+    /* Note item styling */
+    .note-item {
+      border-bottom: 1px solid #f0f0f0;
+      padding: 12px 15px;
+      transition: background-color 0.2s;
+      animation: fadeIn 0.3s ease-in-out;
+      margin-bottom: 10px;
+      border-radius: 6px;
+      background-color: #fcfcfc;
+    }
+    
+    .note-item:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+    }
+    
+    .note-item:hover {
+      background-color: #f9f9fa;
+    }
+    
+    .note-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: #666;
+    }
+    
+    .note-user {
+      font-weight: 600;
+      color: #1a3d5c;
+    }
+    
+    .note-time {
+      color: #888;
+    }
+    
+    .note-body {
+      margin: 10px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #333;
+    }
+    
+    .note-category {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      margin-top: 6px;
+    }
+    
+    .category-action {
+      background-color: #e74c3c;
+      color: white;
+    }
+    
+    .category-pending {
+      background-color: #ff9800;
+      color: white;
+    }
+    
+    .category-info {
+      background-color: #27ae60;
+      color: white;
+    }
+    
+    .category-other {
+      background-color: #95a5a6;
+      color: white;
+    }
+    
+    /* No-notes message */
+    .no-notes-message {
+      text-align: center;
+      padding: 15px;
+      color: #888;
+      font-style: italic;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="sidebar-header">
+    <h2>Opsie Email Assistant</h2>
+    <button class="close-button" id="close-button">&times;</button>
+  </div>
+  
+  <div class="sidebar-content">
+    <div class="email-info" id="email-info">
+      <h3>Email Details</h3>
+      <p>No email selected</p>
+    </div>
+    
+    <div id="already-saved-message" class="status-message status-success" style="display: none;">
+      <div style="display: flex; align-items: center;">
+        <span style="margin-right: 8px; font-size: 18px;">✓</span>
+        <span id="already-saved-text">This email has already been saved to the database.</span>
+      </div>
+      <div style="font-size: 12px; margin-top: 5px;" id="saved-by-info"></div>
+    </div>
+    
+    <div id="handling-status-message" class="status-message status-info" style="display: none;">
+      <div style="display: flex; align-items: center;">
+        <span style="margin-right: 8px; font-size: 18px;">✓</span>
+        <span id="handling-status-text">This email has been handled.</span>
+      </div>
+      <div style="font-size: 12px; margin-top: 5px;" id="handled-by-info"></div>
+      <div style="font-size: 13px; margin-top: 5px; font-style: italic; display: none;" id="handling-note-display"></div>
+    </div>
+    
+    <!-- Action Buttons - Moved here from bottom -->
+    <div class="action-buttons">
+      <button class="action-button" id="save-email-button">Save Email to Database</button>
+      <button class="action-button" id="mark-handled-button" disabled>Save Email First</button>
+    </div>
+    
+    <!-- Notes Section - Moved here to appear after action buttons -->
+    <div id="notes-section" class="notes-section">
+      <div class="notes-header">
+        <h3>Notes</h3>
+        <button id="toggle-notes-form" class="toggle-notes-button">Add Note</button>
+      </div>
+      
+      <!-- Notes Form -->
+      <div id="notes-form-container" style="display: none;">
+        <textarea id="note-body" placeholder="Add your note here..."></textarea>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <select id="note-category">
+            <option value="Action Required">Action Required</option>
+            <option value="Pending">Pending</option>
+            <option value="Information">Information</option>
+            <option value="Other">Other</option>
+          </select>
+          <button id="add-note-button">Add Note</button>
+        </div>
+      </div>
+      
+      <!-- Notes List Container -->
+      <div id="notes-container">
+        <div class="no-notes-message">
+          No notes for this email yet. Click "Add Note" to create the first note.
+        </div>
+      </div>
+    </div>
+    
+    <!-- Email Summary Section -->
+    <div class="section email-summary">
+      <h2>Email Summary</h2>
+      <ul id="summary-items" class="summary-list">
+        <li>Click "Generate AI Summary" to analyze this email</li>
+      </ul>
+      <div class="urgency-container">
+        <div class="urgency-scale">
+          <span>Low Urgency (1)</span>
+          <span>High Urgency (10)</span>
+        </div>
+        <div class="urgency-meter">
+          <div id="urgency-fill" class="urgency-fill"></div>
+        </div>
+        <p style="text-align: center; margin-top: 8px; font-size: 14px;">Urgency Score: <span id="urgency-score" style="font-weight: 600;">-</span>/10</p>
+      </div>
+      <button id="generate-summary-button" class="action-button">Generate AI Summary</button>
+    </div>
+    
+    <!-- Contact Info Section -->
+    <div class="section contact-info">
+      <h2>Contact History</h2>
+      <ul id="contact-items" class="contact-list">
+        <li>Click "Get Contact Summary" to view previous interactions with this sender</li>
+      </ul>
+      
+      <!-- Search Function -->
+      <div class="search-container" style="margin-top: 15px;">
+        <input type="text" id="email-search-input" placeholder="Ask about this contact (e.g., agreed pricing)">
+        <button id="email-search-button" class="action-button">Search</button>
+      </div>
+      
+      <div id="email-search-results" style="display: none;">
+        <p class="search-placeholder">Ask a question to search through previous emails with this contact</p>
+      </div>
+      
+      <button id="generate-contact-button" class="action-button" style="margin-top: 15px;">Get Contact Summary</button>
+    </div>
+    
+    <!-- Reply Section -->
+    <div class="section reply-section">
+      <h2>Generate Email Reply</h2>
+      
+      <div class="reply-options">
+        <div class="reply-row">
+          <div class="reply-option">
+            <label for="reply-tone">Reply Tone:</label>
+            <select id="reply-tone">
+              <option value="formal">Formal</option>
+              <option value="friendly">Friendly</option>
+              <option value="professional">Professional</option>
+              <option value="casual">Casual</option>
+            </select>
+          </div>
+          
+          <div class="reply-option">
+            <label for="reply-length">Reply Length:</label>
+            <select id="reply-length">
+              <option value="short">Short</option>
+              <option value="standard">Standard</option>
+              <option value="detailed">Detailed</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="reply-option">
+          <label for="reply-language">Reply Language:</label>
+          <select id="reply-language">
+            <option value="auto-detect">Auto-detect (match email)</option>
+            <option value="english">English</option>
+            <option value="spanish">Spanish</option>
+            <option value="french">French</option>
+            <option value="german">German</option>
+            <option value="swedish">Swedish</option>
+          </select>
+        </div>
+      </div>
+      
+      <!-- Additional Context Input -->
+      <div class="reply-context-container" style="margin-top: 15px; margin-bottom: 15px;">
+        <label for="reply-additional-context" style="display: block; margin-bottom: 6px; font-weight: 500; color: #1a3d5c; font-size: 14px;">Additional Context (optional):</label>
+        <textarea id="reply-additional-context" placeholder="Add any additional information to consider when generating the reply..." style="width: 100%; min-height: 80px; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-family: 'Poppins', sans-serif; font-size: 14px; resize: vertical;"></textarea>
+        <p style="margin-top: 5px; color: #666; font-size: 12px; font-style: italic;">Include context that may not be in the email but is relevant to your response.</p>
+      </div>
+      
+      <div id="reply-preview-container" style="display: none;">
+        <h3 style="margin-top: 0; margin-bottom: 10px; font-size: 15px; color: #1a3d5c;">Generated Reply</h3>
+        <div id="reply-preview"></div>
+        <button id="copy-reply-button">Copy to clipboard</button>
+      </div>
+      
+      <button id="generate-reply-button" class="action-button">Generate Reply</button>
+    </div>
+    
+    <div id="status-message" class="status-message"></div>
+  </div>
+  
+  <script src="sidebar.js"></script>
+  
+  <!-- Custom Modal for "Mark as Handled" -->
+  <div id="custom-modal-backdrop" class="custom-modal-backdrop">
+    <div class="custom-modal">
+      <div class="custom-modal-header">
+        <h3>Mark Email as Handled</h3>
+        <button id="custom-modal-close" class="custom-modal-close">&times;</button>
+      </div>
+      <div class="custom-modal-body">
+        <p class="custom-modal-message">Add a note about how this email was handled (optional):</p>
+        <textarea id="custom-modal-input" class="custom-modal-input" placeholder="Enter your handling note here..."></textarea>
+      </div>
+      <div class="custom-modal-footer">
+        <button id="custom-modal-cancel" class="custom-modal-button custom-modal-cancel">Cancel</button>
+        <button id="custom-modal-ok" class="custom-modal-button custom-modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html> 
