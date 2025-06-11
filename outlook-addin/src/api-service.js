@@ -57,8 +57,8 @@ async function apiRequest(endpoint, method = 'GET', data = null) {
             signal: AbortSignal.timeout(API_TIMEOUT)
         };
 
-        // Add request body for POST, PUT requests
-        if (data && (method === 'POST' || method === 'PUT')) {
+        // Add request body for POST, PUT, PATCH requests
+        if (data && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
             options.body = JSON.stringify(data);
         }
 
@@ -172,11 +172,25 @@ async function apiRequest(endpoint, method = 'GET', data = null) {
         }
         
         // Return a consistent response format
-        return { 
+        const result = { 
             success: true, 
             data: responseData,
             status: response.status
         };
+        
+        // Add specific logging for qanda queries to debug source_filename issue
+        if (endpoint.includes('qanda') && responseData && Array.isArray(responseData) && responseData.length > 0) {
+            log('QandA query response data for debugging source_filename', 'info', {
+                endpoint: endpoint,
+                recordCount: responseData.length,
+                firstRecord: responseData[0],
+                sourceFilenameInFirstRecord: responseData[0].source_filename,
+                sourceFilenameType: typeof responseData[0].source_filename,
+                allFieldsInFirstRecord: Object.keys(responseData[0])
+            });
+        }
+        
+        return result;
     } catch (error) {
         // Handle different error types
         let errorMessage = error.message || 'An unexpected error occurred';
@@ -740,18 +754,19 @@ async function generateContactHistory(emailAddress) {
             if (userIds.length > 0) {
                 log(`Fetching user details for ${userIds.length} users`, 'info');
                 
-                // Fetch user details
+                // Fetch user details using RPC function to bypass RLS
                 const usersResponse = await fetch(
-                    `https://vewnmfmnvumupdrcraay.supabase.co/rest/v1/users?` +
-                    `id=in.(${userIds.join(',')})` +
-                    `&select=id,first_name,last_name,email`,
+                    `https://vewnmfmnvumupdrcraay.supabase.co/rest/v1/rpc/get_user_details`,
                     {
-                        method: 'GET',
+                        method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                             'apikey': SUPABASE_ANON_KEY,
                             'Authorization': `Bearer ${token}`
-                        }
+                        },
+                        body: JSON.stringify({
+                            user_ids: userIds
+                        })
                     }
                 );
                 
@@ -994,16 +1009,68 @@ async function fetchContactHistory(emailAddress, teamId) {
                 message_body_sample: firstRecord.message_body ? 
                     truncateForLogging(firstRecord.message_body, 100) : 'NULL OR EMPTY',
                 timestamp: firstRecord.timestamp,
-                created_at: firstRecord.created_at
+                created_at: firstRecord.created_at,
+                user_id: firstRecord.user_id
             });
             
             // Check all records for message_body content
             const contentSummary = response.data.map((record, index) => ({
                 index,
                 has_content: Boolean(record.message_body),
-                length: record.message_body ? record.message_body.length : 0
+                length: record.message_body ? record.message_body.length : 0,
+                user_id: record.user_id
             }));
             log('Message body content summary for all records', 'info', contentSummary);
+            
+            // Create a map to store user information
+            const userMap = new Map();
+            
+            // Extract all user IDs from contact history
+            const userIds = response.data
+                .map(message => message.user_id)
+                .filter(id => id); // Filter out null/undefined
+                
+            // Only proceed if we have user IDs to look up
+            if (userIds.length > 0) {
+                // Remove duplicates
+                const uniqueUserIds = [...new Set(userIds)];
+                log(`Found ${uniqueUserIds.length} unique user IDs to look up`, 'info', uniqueUserIds);
+                
+                try {
+                    // Query the users table using RPC function to bypass RLS
+                    log('Fetching user details using RPC function', 'info', uniqueUserIds);
+                    
+                    const usersResponse = await apiRequest(`rpc/get_user_details`, 'POST', {
+                        user_ids: uniqueUserIds
+                    });
+                    
+                    if (usersResponse.success && usersResponse.data) {
+                        log(`Retrieved information for ${usersResponse.data.length} users`, 'info', usersResponse.data);
+                        
+                        // Create a map of user_id to user name
+                        usersResponse.data.forEach(user => {
+                            const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email || 'Unknown user';
+                            userMap.set(user.id, userName);
+                        });
+                        
+                        log('User map created', 'info', Object.fromEntries([...userMap.entries()]));
+                    } else {
+                        log('Failed to retrieve user information', 'warning', usersResponse);
+                    }
+                } catch (userLookupError) {
+                    log('Error retrieving user information', 'error', userLookupError);
+                }
+            }
+            
+            // Add user names to the response data
+            response.data.forEach(record => {
+                if (record.user_id && userMap.has(record.user_id)) {
+                    record.saved_by_name = userMap.get(record.user_id);
+                } else {
+                    record.saved_by_name = 'Team member';
+                }
+            });
+            
         } else {
             log('No records returned from Supabase query', 'warning', {
                 email: emailAddress,
@@ -1250,7 +1317,7 @@ If you can't find relevant information, say so clearly. Only include references 
         let data;
         try {
             data = JSON.parse(responseText);
-        } catch (error) {
+    } catch (error) {
             log('Error parsing OpenAI API response:', 'error', error);
             throw new Error('Failed to parse OpenAI API response');
         }
@@ -1402,7 +1469,11 @@ async function generateReplySuggestion(emailContentOrData, senderOrOptions, subj
     
     try {
         // Generate cache key based on content hash and options to avoid redundant API calls
-        const cacheKey = `reply_${subject}_${sender}_${threadHistory.length}_${tone}_${length}_${language}_${additionalContext.substring(0, 20)}`;
+        // Include a simple hash of additional context to differentiate Q&A-enhanced replies
+        const contextHash = additionalContext ? 
+            additionalContext.length.toString() + '_' + additionalContext.substring(0, 50).replace(/\s+/g, '').substring(0, 20) : 
+            'no_context';
+        const cacheKey = `reply_${subject}_${sender}_${threadHistory.length}_${tone}_${length}_${language}_${contextHash}`;
         
         // Check if we have a cached result
         const cachedResult = localStorage.getItem(cacheKey);
@@ -1462,11 +1533,33 @@ async function generateReplySuggestion(emailContentOrData, senderOrOptions, subj
         
         DO NOT include any explanations or notes about your process. ONLY output the email reply text.
         DO NOT include the email headers like "To:", "Subject:" etc. ONLY the body of the reply.
+        
+        IMPORTANT: Include an appropriate closing and signature in the target language. Use the user's name "${userName}" in the signature.
+        For example:
+        - English: "Best regards, ${userName}"
+        - German: "Mit freundlichen Grüßen, ${userName}" 
+        - French: "Cordialement, ${userName}"
+        - Swedish: "Med vänliga hälsningar, ${userName}"
+        - Spanish: "Saludos cordiales, ${userName}"
+        - Italian: "Cordiali saluti, ${userName}"
+        - Portuguese: "Atenciosamente, ${userName}"
+        
+        If Questions & Answers are provided in the additional context, use them to:
+        - Provide accurate, informed responses based on the knowledge base
+        - Reference specific information when relevant to the email
+        - Ensure consistency with verified answers
+        - Address any questions or concerns raised in the email using the available knowledge
+        
         If the user provided additional context, incorporate it naturally into your reply.`;
         
         // Add additional context instruction if provided
         if (additionalContext) {
-            systemMessage += `\nAdditional context from the user: ${additionalContext}`;
+            // Check if the additional context contains Q&A data
+            const hasQAContext = additionalContext.includes('Relevant Questions & Answers');
+            if (hasQAContext) {
+                systemMessage += `\n\nIMPORTANT: The additional context below contains relevant Questions & Answers from the knowledge base. Use this information to provide accurate, well-informed responses. Pay special attention to verified answers and match confidence scores.`;
+            }
+            systemMessage += `\nAdditional context: ${additionalContext}`;
         }
         
         // Log system message
@@ -1529,14 +1622,9 @@ async function generateReplySuggestion(emailContentOrData, senderOrOptions, subj
         const replyText = responseData.choices[0].message.content.trim();
         log('AI reply content:', 'info', { previewLength: replyText.length, preview: replyText.substring(0, 100) + '...' });
         
-        // Add signature if userName is available
-        const replyWithSignature = userName 
-            ? `${replyText}\n\nBest regards,\n${userName}`
-            : replyText;
-        
-        // Format the result
+        // Format the result (AI now handles the complete reply including signature)
         const result = {
-            replyText: replyWithSignature
+            replyText: replyText
         };
         
         // Cache the result
@@ -2274,18 +2362,25 @@ async function addNoteToMessage(messageId, userId, noteBody, category = null) {
             return { success: false, error: 'Authentication required' };
         }
         
+        // Get current user info to get team_id
+        const userInfo = await getUserInfo(true); // Force refresh to get latest team info
+        if (!userInfo || !userInfo.team_id) {
+            return { success: false, error: 'User must be part of a team to add notes' };
+        }
+        
         // Get the internal message ID (resolve from external ID if needed)
         const messageIdResult = await getInternalMessageId(messageId);
         if (!messageIdResult.success) {
             return { success: false, error: messageIdResult.error };
         }
         
-        // Prepare the note data with the internal message ID
+        // Prepare the note data with the internal message ID and team_id
         const noteData = {
             message_id: messageIdResult.id,
             user_id: userId,
             note_body: noteBody,
             category: category || 'Other',
+            team_id: userInfo.team_id,
             created_at: new Date().toISOString()
         };
         
@@ -2340,14 +2435,20 @@ async function getMessageNotes(messageId) {
             return { success: false, error: 'Authentication required' };
         }
         
+        // Get current user info to get team_id
+        const userInfo = await getUserInfo(true); // Force refresh to get latest team info
+        if (!userInfo || !userInfo.team_id) {
+            return { success: false, error: 'User must be part of a team to view notes' };
+        }
+        
         // Get the internal message ID (resolve from external ID if needed)
         const messageIdResult = await getInternalMessageId(messageId);
         if (!messageIdResult.success) {
             return { success: false, error: messageIdResult.error };
         }
         
-        // Now use the internal message ID to fetch notes
-        const response = await apiRequest(`notes?message_id=eq.${messageIdResult.id}&order=created_at.desc`, 'GET');
+        // Now use the internal message ID to fetch notes, filtered by team
+        const response = await apiRequest(`notes?message_id=eq.${messageIdResult.id}&team_id=eq.${userInfo.team_id}&order=created_at.desc`, 'GET');
         
         if (!response.success) {
             log('Failed to get notes', 'error', response.error);
@@ -2366,8 +2467,10 @@ async function getMessageNotes(messageId) {
             const userIds = [...new Set(notes.map(note => note.user_id))];
             
             if (userIds.length > 0) {
-                // Fetch user details
-                const usersResponse = await apiRequest(`users?id=in.(${userIds.join(',')})`, 'GET');
+                // Fetch user details using RPC function to bypass RLS
+                const usersResponse = await apiRequest(`rpc/get_user_details`, 'POST', {
+                    user_ids: userIds
+                });
                 
                 if (usersResponse.success && usersResponse.data) {
                     // Create a map of user IDs to user details
@@ -2542,12 +2645,12 @@ async function getUserInfo(forceRefresh = false) {
         window.OpsieApi.STORAGE_KEY_REFRESH = STORAGE_KEY_REFRESH;
         
         // Add main API functions to the global object
-        window.OpsieApi.generateEmailSummary = generateEmailSummary;
-        window.OpsieApi.generateReplySuggestion = generateReplySuggestion;
-        window.OpsieApi.saveEmail = saveEmail;
-        window.OpsieApi.login = login;
-        window.OpsieApi.logout = logout;
-        window.OpsieApi.isAuthenticated = isAuthenticated;
+  window.OpsieApi.generateEmailSummary = generateEmailSummary;
+  window.OpsieApi.generateReplySuggestion = generateReplySuggestion;
+  window.OpsieApi.saveEmail = saveEmail;
+  window.OpsieApi.login = login;
+  window.OpsieApi.logout = logout;
+  window.OpsieApi.isAuthenticated = isAuthenticated;
         window.OpsieApi.getUserInfo = getUserInfo;
         window.OpsieApi.getUserId = getUserId;
         window.OpsieApi.getTeamDetails = getTeamDetails;
@@ -2555,18 +2658,34 @@ async function getUserInfo(forceRefresh = false) {
         window.OpsieApi.generateContactHistory = generateContactHistory;
         window.OpsieApi.searchEmailHistory = searchEmailHistory;
         window.OpsieApi.fetchContactHistory = fetchContactHistory;
-        window.OpsieApi.getOpenAIApiKey = getOpenAIApiKey;
+  window.OpsieApi.getOpenAIApiKey = getOpenAIApiKey;
         window.OpsieApi.updateEmailSummary = updateEmailSummary;
         window.OpsieApi.initTeamAndUserInfo = initTeamAndUserInfo;
-        window.OpsieApi.showNotification = showNotification;
+  window.OpsieApi.showNotification = showNotification;
+        
+        // Add authentication functions
+        window.OpsieApi.signUp = signUp;
+        window.OpsieApi.requestPasswordReset = requestPasswordReset;
+        
+        // Add team management functions
+        window.OpsieApi.requestToJoinTeam = requestToJoinTeam;
+        window.OpsieApi.createTeam = createTeam;
+        window.OpsieApi.checkJoinRequestStatus = checkJoinRequestStatus;
+        window.OpsieApi.getUserPendingJoinRequest = getUserPendingJoinRequest;
+        window.OpsieApi.getTeamJoinRequests = getTeamJoinRequests;
+window.OpsieApi.respondToJoinRequest = respondToJoinRequest;
+window.OpsieApi.removeTeamMember = removeTeamMember;
+window.OpsieApi.leaveTeam = leaveTeam;
+window.OpsieApi.transferAdminRole = transferAdminRole;
+window.OpsieApi.deleteTeam = deleteTeam;
         
         // Add utilities
         window.OpsieApi.log = log;
         window.OpsieApi.setLoading = setLoading;
         window.OpsieApi.getInternalMessageId = getInternalMessageId;
-        window.OpsieApi.addNoteToMessage = addNoteToMessage;
-        window.OpsieApi.getMessageNotes = getMessageNotes;
-        window.OpsieApi.clearAllCaches = clearAllCaches;
+  window.OpsieApi.addNoteToMessage = addNoteToMessage;
+  window.OpsieApi.getMessageNotes = getMessageNotes;
+  window.OpsieApi.clearAllCaches = clearAllCaches;
     }
 })();
 
@@ -2755,14 +2874,17 @@ async function getTeamMembers(teamId, forceRefresh = false) {
             return { success: false, error: 'Authentication required' };
         }
         
-        // Make API call to get team members
-        const response = await fetch(`https://vewnmfmnvumupdrcraay.supabase.co/rest/v1/users?team_id=eq.${teamId}&select=id,email,first_name,last_name,role,created_at`, {
-            method: 'GET',
+        // Make API call to get team members using RPC function to bypass RLS
+        const response = await fetch(`https://vewnmfmnvumupdrcraay.supabase.co/rest/v1/rpc/get_team_members`, {
+            method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'apikey': SUPABASE_ANON_KEY,
                 'Authorization': `Bearer ${token}`
-            }
+            },
+            body: JSON.stringify({
+                team_uuid: teamId
+            })
         });
         
         if (!response.ok) {
@@ -3098,26 +3220,103 @@ async function extractQuestionsAndAnswers(emailData) {
             try {
                 log(`Searching for answer to question: ${question.text}`, 'info');
                 
+                // Log question details before checking for existing answers
+                log('Processing question with details:', 'info', {
+                    text: question.text,
+                    type: question.type || 'unknown',
+                    confidence: question.confidence || 0,
+                    keywords: question.keywords || []
+                });
+                
                 // First check if this question (or similar) exists in the qanda table
+                log('Checking qanda table for existing answer...', 'info', {
+                    questionText: question.text,
+                    teamId,
+                    timestamp: new Date().toISOString()
+                });
+                
                 const existingAnswer = await findExistingAnswer(question.text, teamId);
                 
+                // Let's add this right before the section where we search for existing answers in extractQuestionsAndAnswers
+                // The exact location is where we check if we've found an answer from the database
+                log('Checking for existing answers in qanda table', 'info', {
+                    questionCount: questions.length,
+                    sampleQuestion: questions.length > 0 ? questions[0].text : 'No questions'
+                });
+                
                 if (existingAnswer.found) {
-                    log('Found existing answer in database', 'info', existingAnswer);
+                    log('Found existing answer in qanda table, processing answer object', 'info', {
+                        questionText: question.text,
+                        answerId: existingAnswer.id,
+                        answerLength: existingAnswer.answer ? existingAnswer.answer.length : 0,
+                        isVerified: existingAnswer.verified,
+                        matchType: existingAnswer.matchType,
+                        updatedAt: existingAnswer.updatedAt,
+                        answerFields: Object.keys(existingAnswer)
+                    });
+                    
+                    // Add to the section where a question is populated with an existing answer
                     question.answer = existingAnswer.answer;
-                    question.references = existingAnswer.references || [];
-                    question.answerId = existingAnswer.id;
-                    question.verified = existingAnswer.verified;
                     question.source = 'database';
+                    question.verified = existingAnswer.verified;
+                    question.answerId = existingAnswer.id;
+                    question.matchType = existingAnswer.matchType;
+
+                    // If it's a semantic or fuzzy match, include the original question and similarity score
+                    if (existingAnswer.matchType === 'semantic' || existingAnswer.matchType === 'fuzzy') {
+                        question.originalQuestion = existingAnswer.originalQuestion;
+                        question.similarityScore = existingAnswer.similarityScore;
+                    }
+
+                    // Add the updatedAt field from the database
+                    question.updatedAt = existingAnswer.updatedAt;
+
+                    // Log the complete question object after populating
+                    log('Populated question with existing answer data', 'info', {
+                        questionText: question.text,
+                        hasUpdatedAt: !!question.updatedAt,
+                        updatedAtValue: question.updatedAt,
+                        questionKeys: Object.keys(question)
+                    });
+                    
+                    question.references = existingAnswer.references || [];
+                    
+                    // Store translation info if available
+                    if (question.original_text && question.original_language && question.original_language !== 'en') {
+                        question.translatedFrom = {
+                            originalText: question.original_text,
+                            language: question.original_language
+                        };
+                    }
                 } else {
+                    log('No existing answer found in qanda table, searching emails instead', 'info', {
+                        questionText: question.text
+                    });
+                    
                     // If no existing answer, search team emails for an answer
                     const searchResult = await searchForAnswer(question.text, teamId, apiKey);
                     
                     if (searchResult.success) {
-                        log('Found answer from email search', 'info', searchResult);
+                        log('Found answer from email search', 'info', {
+                            answerType: searchResult.answerType,
+                            confidence: searchResult.confidence,
+                            referencesCount: searchResult.references?.length || 0
+                        });
+                        
                         question.answer = searchResult.answer;
+                        question.answerType = searchResult.answerType;
+                        question.confidence = searchResult.confidence;
                         question.references = searchResult.references || [];
                         question.source = 'search';
                         question.verified = false;
+                        
+                        // Store translation info if available
+                        if (question.original_text && question.original_language && question.original_language !== 'en') {
+                            question.translatedFrom = {
+                                originalText: question.original_text,
+                                language: question.original_language
+                            };
+                        }
                         
                         // Save this Q&A pair to the database for future use
                         try {
@@ -3201,53 +3400,78 @@ Date: ${emailData.timestamp || new Date().toISOString()}
 ${emailData.body}
         `;
         
+        // Debug: Log the email content being analyzed
+        log('Email content being sent to AI for question extraction:', 'info', {
+            emailContent: emailContent,
+            bodyLength: emailData.body ? emailData.body.length : 0
+        });
+        
         // Create the API request
         const requestBody = {
             model: "gpt-4o",
             messages: [
                 {
                     role: "system",
-                    content: `You are an AI assistant that identifies both explicit and implicit questions in emails. 
-Your task is to extract actual questions and requests for information from the email content.
+                    content: `You are an expert business email analyst that identifies questions and information requests from emails that would be valuable to answer and store in a knowledge base.
 
-For EXPLICIT questions (marked with "?"), extract them exactly as written.
-For IMPLICIT questions or information requests, reformulate them as clear questions.
+WHAT TO EXTRACT:
+✅ Direct questions (marked with "?" or implied)
+✅ Requests for information, clarification, or data
+✅ Questions about processes, procedures, timelines
+✅ Capability or resource availability questions
+✅ Status or progress inquiries
+✅ Questions about policies, requirements, or specifications
 
-Also identify statements that contain business information that could be relevant for future reference, and convert them to question/answer format.
+EXAMPLES OF WHAT TO EXTRACT:
+- "Skulle du ha tid att titta på...?" → "Do you have time to look at...?"
+- "Kan du vidarebefordra mejl?" → "Can you forward emails?"
+- "Hur långt har vi kommit i processen?" → "How far have we progressed in the process?"
+- "What is our delivery time?" → "What is our delivery time?"
+- "Who is responsible for...?" → "Who is responsible for...?"
 
-For example:
-- "Our standard delivery time is 8 weeks" → Question: "What is your delivery time?" Answer: "8 weeks"
-- "Please let me know the status" → Question: "What is the status of my order?"
-- "Can you share the project timeline?" → Question: "What is the project timeline?"
+WHAT TO IGNORE:
+❌ Pure greetings or pleasantries
+❌ Questions already fully answered in the same email
+❌ Simple yes/no confirmations without business value
 
-For each question or information point, include:
-1. The identified question text
-2. The type (explicit, implicit, informational)
-3. Relevant keywords (2-5 words that would help searching for this question)
-4. Confidence score (0.1-1.0) indicating how confident you are this is a valid question or request
+CRITICAL REQUIREMENTS:
+1. ALWAYS translate non-English questions to English
+2. Make questions standalone and searchable
+3. Be INCLUSIVE rather than overly restrictive
+4. Extract questions that could help future team members
 
-Format your response as JSON:
+For each question found:
+- text: Clear question in English
+- original_text: Original text if not English
+- original_language: Language code (sv, en, de, etc.)
+- type: "direct_question", "information_request", or "clarification_needed"
+- business_context: What area this relates to
+- keywords: 3-5 search keywords
+- priority: "high", "medium", or "low"
+
+Response format:
 {
   "questions": [
     {
-      "text": "The full question text",
-      "type": "explicit|implicit|informational",
-      "keywords": ["keyword1", "keyword2", "..."],
-      "confidence": 0.9,
-      "extracted_from": "brief surrounding context from email"
+      "text": "Do you have time to look at a solution for checking procurement emails?",
+      "original_text": "Skulle du möjligtvis ha tid att titta på en lösning för att kontrollera de mejl vi får beträffande upphandlingar?",
+      "original_language": "sv",
+      "type": "information_request",
+      "business_context": "procurement and email management",
+      "keywords": ["procurement", "email", "solution", "checking"],
+      "priority": "medium"
     }
   ]
 }
 
-If no questions are found, return an empty questions array.
-IMPORTANT: Avoid creating questions about general greetings, signatures, or pleasantries. Focus on actual information requests or business knowledge.`
+If absolutely no questions exist, return empty array. But be generous in identifying questions!`
                 },
                 {
                     role: "user",
-                    content: `Please extract all questions from this email:\n\n${emailContent}`
+                    content: `Please extract actionable business questions from this email:\n\n${emailContent}`
                 }
             ],
-            temperature: 0.2
+            temperature: 0.3
         };
         
         // Call the OpenAI API
@@ -3319,33 +3543,543 @@ IMPORTANT: Avoid creating questions about general greetings, signatures, or plea
  */
 async function findExistingAnswer(questionText, teamId) {
     try {
-        log('Searching for existing answer', 'info', { questionText });
+        log('Searching for existing answer in qanda table', 'info', { 
+            questionText, 
+            teamId,
+            searchType: 'semantic+exact+fuzzy'
+        });
         
         // Get authentication token
         const token = await getAuthToken();
         if (!token) {
-            log('No authentication token available for finding answers', 'error');
+            log('No authentication token available for finding answers in qanda table', 'error');
             return { found: false };
         }
         
-        // Get the OpenAI API key for embedding
+        // Step 1: Try an exact match search first (fastest method)
+        log('Attempting exact match search in qanda table', 'info', { questionText });
+        
+        // Test query to debug source_filename retrieval
+        log('Testing source_filename retrieval with a simple query', 'info');
+        const testQuery = `qanda?team_id=eq.${teamId}&select=id,source_filename&limit=5`;
+        const testResponse = await apiRequest(testQuery, 'GET');
+        log('Test query results for source_filename', 'info', {
+            success: testResponse.success,
+            dataCount: testResponse.data ? testResponse.data.length : 0,
+            sampleData: testResponse.data ? testResponse.data.slice(0, 2) : null
+        });
+        
+        const exactMatchQuery = `qanda?team_id=eq.${teamId}&question_text=eq.${encodeURIComponent(questionText)}&select=id,question_text,answer_text,is_verified,keywords,updated_at,source_filename&order=created_at.desc`;
+        
+        // Log the exact query being sent
+        log('Exact match query URL constructed', 'info', {
+            query: exactMatchQuery,
+            teamId: teamId,
+            questionText: questionText,
+            encodedQuestionText: encodeURIComponent(questionText)
+        });
+        
+        const exactMatchResponse = await apiRequest(exactMatchQuery, 'GET');
+        
+        if (!exactMatchResponse.success) {
+            log('Error during exact match search in qanda table', 'error', exactMatchResponse.error);
+            return { found: false };
+        }
+        
+        // Log the exact match results
+        log(`Exact match search in qanda table returned ${exactMatchResponse.data?.length || 0} results`, 'info');
+        
+        // If we found an exact match, return it
+        if (exactMatchResponse.data && exactMatchResponse.data.length > 0) {
+            const matchedQA = exactMatchResponse.data[0];
+            
+            // Add detailed logging to debug source_filename issue
+            log('Raw database response for exact match', 'info', {
+                rawData: matchedQA,
+                sourceFilenameRaw: matchedQA.source_filename,
+                sourceFilenameType: typeof matchedQA.source_filename,
+                sourceFilenameIsNull: matchedQA.source_filename === null,
+                sourceFilenameIsUndefined: matchedQA.source_filename === undefined,
+                sourceFilenameIsEmpty: matchedQA.source_filename === '',
+                allKeys: Object.keys(matchedQA),
+                allValues: Object.values(matchedQA)
+            });
+            
+            log('Found exact match in qanda table', 'info', {
+                qaId: matchedQA.id,
+                questionText: matchedQA.question_text,
+                answerText: matchedQA.answer_text ? `${matchedQA.answer_text.substring(0, 50)}...` : 'No answer',
+                isVerified: matchedQA.is_verified,
+                updatedAt: matchedQA.updated_at,
+                sourceFilename: matchedQA.source_filename,
+                availableFields: Object.keys(matchedQA)
+            });
+            
+            const result = {
+                found: true,
+                id: matchedQA.id,
+                answer: matchedQA.answer_text,
+                verified: matchedQA.is_verified,
+                references: [],  // References not currently stored in qanda table
+                keywords: matchedQA.keywords || [],
+                matchType: 'exact',
+                updatedAt: matchedQA.updated_at,
+                sourceFilename: matchedQA.source_filename
+            };
+            
+            log('Returning exact match result with updatedAt and sourceFilename', 'info', {
+                updatedAt: result.updatedAt,
+                sourceFilename: result.sourceFilename,
+                sourceFilenameInResult: result.sourceFilename,
+                resultFields: Object.keys(result)
+            });
+            
+            return result;
+        }
+        
+        // Step 2: Get the OpenAI API key for embedding (needed for semantic search)
         const apiKey = localStorage.getItem('openaiApiKey');
-        if (!apiKey) {
-            log('No API key available for embedding search', 'warning');
-            // Fall back to exact match search without embeddings
-            // For now, return not found - this will be enhanced once we set up vector search
+        
+        // Step 3: If we have an API key, try semantic search with embeddings
+        if (apiKey) {
+            log('Attempting semantic search with embeddings', 'info', { questionText });
+            
+            try {
+                // First, fetch all Q&A pairs for this team (limited to 100 for performance)
+                const allQAQuery = `qanda?team_id=eq.${teamId}&select=id,question_text,answer_text,is_verified,keywords,updated_at,source_filename&order=created_at.desc&limit=100`;
+                const allQAResponse = await apiRequest(allQAQuery, 'GET');
+                
+                if (!allQAResponse.success || !allQAResponse.data || allQAResponse.data.length === 0) {
+                    log('No Q&A data found for semantic search or error fetching data', 'info');
+                } else {
+                    const allQA = allQAResponse.data;
+                    log(`Retrieved ${allQA.length} Q&A pairs for semantic search`, 'info');
+                    
+                    // Generate embedding for the query question
+                    const queryEmbedding = await generateEmbedding(questionText, apiKey);
+                    
+                    if (!queryEmbedding) {
+                        log('Failed to generate embedding for query question', 'error');
+                    } else {
+                        // For each Q&A pair, generate an embedding and calculate similarity
+                        const similarities = [];
+                        
+                        // Process in batches to avoid rate limits and timeout
+                        const batchSize = 5;
+                        const batches = Math.ceil(allQA.length / batchSize);
+                        
+                        for (let batchIndex = 0; batchIndex < batches; batchIndex++) {
+                            const batchStart = batchIndex * batchSize;
+                            const batchEnd = Math.min(batchStart + batchSize, allQA.length);
+                            const batch = allQA.slice(batchStart, batchEnd);
+                            
+                            // Process batch in parallel
+                            const batchPromises = batch.map(async (qa) => {
+                                const docEmbedding = await generateEmbedding(qa.question_text, apiKey);
+                                if (!docEmbedding) return null;
+                                
+                                const similarity = calculateCosineSimilarity(queryEmbedding, docEmbedding);
+                                return {
+                                    qa,
+                                    similarity
+                                };
+                            });
+                            
+                            const batchResults = await Promise.all(batchPromises);
+                            batchResults.forEach(result => {
+                                if (result) similarities.push(result);
+                            });
+                        }
+                        
+                        // Apply weights for recency and verification when scores are close
+                        const SIMILARITY_THRESHOLD = 0.05; // Consider scores within 0.05 as close
+                        const RECENCY_BOOST = 0.05; // Boost for recent answers (up to 30 days)
+                        const VERIFICATION_BOOST = 0.05; // Boost for verified answers
+                        const now = new Date();
+                        const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+                        
+                        // Calculate adjusted scores with additional factors
+                        similarities.forEach(item => {
+                            // Start with base similarity score
+                            let adjustedScore = item.similarity;
+                            
+                            // Add recency boost for answers updated within last 30 days
+                            if (item.qa.updated_at) {
+                                const updatedDate = new Date(item.qa.updated_at);
+                                const ageMs = now - updatedDate;
+                                
+                                if (ageMs <= THIRTY_DAYS_MS) {
+                                    // Recency boost: newer answers get up to 0.05 boost
+                                    const recencyBoost = RECENCY_BOOST * (1 - (ageMs / THIRTY_DAYS_MS));
+                                    adjustedScore += recencyBoost;
+                                    
+                                    log('Applied recency boost', 'info', {
+                                        question: item.qa.question_text.substring(0, 50),
+                                        updatedAt: item.qa.updated_at,
+                                        ageInDays: Math.round(ageMs / (24 * 60 * 60 * 1000)),
+                                        recencyBoost: recencyBoost.toFixed(3),
+                                        beforeBoost: item.similarity.toFixed(3),
+                                        afterBoost: adjustedScore.toFixed(3)
+                                    });
+                                }
+                            }
+                            
+                            // Add verification boost
+                            if (item.qa.is_verified) {
+                                adjustedScore += VERIFICATION_BOOST; // Verified answers get a 0.05 boost
+                                
+                                log('Applied verification boost', 'info', {
+                                    question: item.qa.question_text.substring(0, 50),
+                                    verificationBoost: VERIFICATION_BOOST,
+                                    beforeBoost: (adjustedScore - VERIFICATION_BOOST).toFixed(3),
+                                    afterBoost: adjustedScore.toFixed(3)
+                                });
+                            }
+                            
+                            // Store the adjusted score
+                            item.adjustedScore = adjustedScore;
+                        });
+                        
+                        // Sort by adjusted score (highest first)
+                        similarities.sort((a, b) => b.adjustedScore - a.adjustedScore);
+                        
+                        // Check if boosts affected the ranking when scores are close
+                        if (similarities.length >= 2) {
+                            const topMatch = similarities[0];
+                            const runnerUp = similarities[1];
+                            
+                            if (Math.abs(topMatch.similarity - runnerUp.similarity) <= SIMILARITY_THRESHOLD &&
+                                topMatch.adjustedScore > runnerUp.adjustedScore) {
+                                log('Ranking changed due to recency/verification boosts', 'info', {
+                                    originalTopMatch: {
+                                        question: runnerUp.qa.question_text.substring(0, 50),
+                                        similarity: runnerUp.similarity.toFixed(3),
+                                        adjustedScore: runnerUp.adjustedScore.toFixed(3),
+                                        isVerified: runnerUp.qa.is_verified,
+                                        updatedAt: runnerUp.qa.updated_at
+                                    },
+                                    newTopMatch: {
+                                        question: topMatch.qa.question_text.substring(0, 50),
+                                        similarity: topMatch.similarity.toFixed(3),
+                                        adjustedScore: topMatch.adjustedScore.toFixed(3),
+                                        isVerified: topMatch.qa.is_verified,
+                                        updatedAt: topMatch.qa.updated_at
+                                    }
+                                });
+                            }
+                        }
+                        
+                        // Log adjusted similarity scores for debugging
+                        log('Adjusted similarity scores (with recency & verification boosts):', 'info', 
+                            similarities.slice(0, 3).map(s => ({
+                                question: s.qa.question_text,
+                                baseSimilarity: s.similarity.toFixed(3),
+                                adjustedScore: s.adjustedScore.toFixed(3),
+                                isVerified: s.qa.is_verified,
+                                updatedAt: s.qa.updated_at
+                            }))
+                        );
+                        
+                        // If we found a semantically similar question with high similarity
+                        if (similarities.length > 0 && similarities[0].similarity > 0.35) {
+                            const bestMatch = similarities[0];
+                            
+                            // Add detailed logging to debug source_filename issue
+                            log('Raw database response for semantic match', 'info', {
+                                rawData: bestMatch.qa,
+                                sourceFilenameRaw: bestMatch.qa.source_filename,
+                                sourceFilenameType: typeof bestMatch.qa.source_filename,
+                                sourceFilenameIsNull: bestMatch.qa.source_filename === null,
+                                sourceFilenameIsUndefined: bestMatch.qa.source_filename === undefined,
+                                sourceFilenameIsEmpty: bestMatch.qa.source_filename === '',
+                                allKeys: Object.keys(bestMatch.qa),
+                                allValues: Object.values(bestMatch.qa)
+                            });
+                            
+                            log('Found semantic match in qanda table', 'info', {
+                                qaId: bestMatch.qa.id,
+                                questionText: bestMatch.qa.question_text,
+                                similarityScore: bestMatch.similarity,
+                                answerText: bestMatch.qa.answer_text ? `${bestMatch.qa.answer_text.substring(0, 50)}...` : 'No answer',
+                                isVerified: bestMatch.qa.is_verified,
+                                updatedAt: bestMatch.qa.updated_at,
+                                sourceFilename: bestMatch.qa.source_filename,
+                                availableFields: Object.keys(bestMatch.qa)
+                            });
+                            
+                            const result = {
+                                found: true,
+                                id: bestMatch.qa.id,
+                                answer: bestMatch.qa.answer_text,
+                                verified: bestMatch.qa.is_verified,
+                                references: [],
+                                keywords: bestMatch.qa.keywords || [],
+                                matchType: 'semantic',
+                                similarityScore: bestMatch.similarity,
+                                adjustedScore: bestMatch.adjustedScore,
+                                originalQuestion: bestMatch.qa.question_text,
+                                updatedAt: bestMatch.qa.updated_at,
+                                sourceFilename: bestMatch.qa.source_filename
+                            };
+                            
+                            // Log additional information about why this answer was selected
+                            if (bestMatch.adjustedScore > bestMatch.similarity) {
+                                log('Answer selection was influenced by recency/verification boosts', 'info', {
+                                    question: bestMatch.qa.question_text.substring(0, 50),
+                                    baseSimilarity: bestMatch.similarity.toFixed(3),
+                                    adjustedScore: bestMatch.adjustedScore.toFixed(3),
+                                    boost: (bestMatch.adjustedScore - bestMatch.similarity).toFixed(3),
+                                    isVerified: bestMatch.qa.is_verified,
+                                    updatedAt: bestMatch.qa.updated_at,
+                                    ageInDays: bestMatch.qa.updated_at ? 
+                                        Math.round((now - new Date(bestMatch.qa.updated_at)) / (24 * 60 * 60 * 1000)) : 'unknown'
+                                });
+                            }
+                            
+                            log('Returning semantic match result with updatedAt', 'info', {
+                                updatedAt: result.updatedAt,
+                                resultFields: Object.keys(result)
+                            });
+                            
+                            return result;
+                        } else {
+                            log('No high-confidence semantic match found', 'info', {
+                                bestMatchScore: similarities.length > 0 ? similarities[0].similarity : 0
+                            });
+                        }
+                    }
+                }
+            } catch (semanticError) {
+                log('Error during semantic search', 'error', {
+                    error: semanticError.message,
+                    stack: semanticError.stack
+                });
+                // Continue to fuzzy search if semantic search fails
+            }
+        } else {
+            log('No OpenAI API key available for semantic search, falling back to fuzzy search', 'warning');
+        }
+        
+        // Step 4: Try a fuzzy match search (ilike operator) as a fallback
+        log('No exact or semantic match found, attempting fuzzy search in qanda table', 'info', { questionText });
+        
+        // Normalize the question text for better matching
+        const normalizedQuestion = questionText.toLowerCase().trim();
+        
+        // Extract keywords using a more sophisticated approach
+        // First, remove common stop words
+        const stopWords = ['a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'about', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'can', 'could', 'will', 'would', 'should', 'may', 'might', 'must', 'shall', 'please', 'thank', 'you', 'your', 'me', 'my', 'mine', 'i', 'we', 'us', 'our', 'ours', 'they', 'them', 'their', 'theirs'];
+        
+        // Split by non-alphanumeric characters and filter
+        const wordCandidates = normalizedQuestion.split(/[^a-z0-9]+/)
+            .filter(word => word.length > 2)  // Only keep words with 3+ characters
+            .filter(word => !stopWords.includes(word)); // Remove stop words
+        
+        // Extract key business terms that are more likely to be relevant
+        const businessTerms = extractBusinessTerms(normalizedQuestion);
+        
+        // Combine business terms with remaining filtered words
+        const searchWords = [...new Set([...businessTerms, ...wordCandidates])];
+        
+        // Only perform fuzzy search if we have meaningful words to search for
+        if (searchWords.length === 0) {
+            log('No suitable search terms for fuzzy search in qanda table', 'warning');
             return { found: false };
         }
         
-        // This is a placeholder for now - will implement the actual database query
-        // when the qanda table is created. For now, assume no matching questions.
+        // Create a query that searches for key terms using ILIKE
+        // Use more terms for better matching
+        const searchTerms = searchWords.slice(0, 4);
         
-        // TODO: Replace this with actual database query once table is created
+        // Log the search terms we're using
+        log('Using the following terms for fuzzy search in qanda table', 'info', searchTerms);
+        
+        // Build the query conditions for each search term
+        let fuzzyQuery = `qanda?team_id=eq.${teamId}&select=id,question_text,answer_text,is_verified,keywords,updated_at,source_filename`;
+        
+        // Add search conditions
+        searchTerms.forEach((term, index) => {
+            // For the first term, we start with "and="
+            // For subsequent terms, we add more conditions
+            const prefix = index === 0 ? '&question_text=ilike.' : ',';
+            fuzzyQuery += `${prefix}%25${encodeURIComponent(term)}%25`;
+        });
+        
+        fuzzyQuery += '&order=created_at.desc';
+        
+        log('Executing fuzzy search query on qanda table', 'info', { fuzzyQuery });
+        const fuzzyMatchResponse = await apiRequest(fuzzyQuery, 'GET');
+        
+        if (!fuzzyMatchResponse.success) {
+            log('Error during fuzzy search in qanda table', 'error', fuzzyMatchResponse.error);
+            return { found: false };
+        }
+        
+        // Log the fuzzy match results
+        log(`Fuzzy search in qanda table returned ${fuzzyMatchResponse.data?.length || 0} results`, 'info');
+        
+        // If we found fuzzy matches, use the first (most recent) one
+        if (fuzzyMatchResponse.data && fuzzyMatchResponse.data.length > 0) {
+            const matchedQA = fuzzyMatchResponse.data[0];
+            
+            // Add detailed logging to debug source_filename issue
+            log('Raw database response for fuzzy match', 'info', {
+                rawData: matchedQA,
+                sourceFilenameRaw: matchedQA.source_filename,
+                sourceFilenameType: typeof matchedQA.source_filename,
+                sourceFilenameIsNull: matchedQA.source_filename === null,
+                sourceFilenameIsUndefined: matchedQA.source_filename === undefined,
+                sourceFilenameIsEmpty: matchedQA.source_filename === '',
+                allKeys: Object.keys(matchedQA),
+                allValues: Object.values(matchedQA)
+            });
+            
+            log('Found fuzzy match in qanda table', 'info', {
+                qaId: matchedQA.id,
+                questionText: matchedQA.question_text,
+                answerText: matchedQA.answer_text ? `${matchedQA.answer_text.substring(0, 50)}...` : 'No answer',
+                isVerified: matchedQA.is_verified,
+                matchType: 'fuzzy',
+                updatedAt: matchedQA.updated_at,
+                sourceFilename: matchedQA.source_filename,
+                availableFields: Object.keys(matchedQA)
+            });
+            
+            const result = {
+                found: true,
+                id: matchedQA.id,
+                answer: matchedQA.answer_text,
+                verified: matchedQA.is_verified,
+                references: [],  // References not currently stored in qanda table
+                keywords: matchedQA.keywords || [],
+                matchType: 'fuzzy',
+                similarityScore: 0.6, // Fuzzy matches are given a moderate similarity score
+                originalQuestion: matchedQA.question_text,
+                updatedAt: matchedQA.updated_at,
+                sourceFilename: matchedQA.source_filename
+            };
+            
+            log('Returning fuzzy match result with updatedAt', 'info', {
+                updatedAt: result.updatedAt,
+                resultFields: Object.keys(result)
+            });
+            
+            return result;
+        }
+        
+        // No match found in any search method
+        log('No matching answer found in qanda table (tried exact, semantic, and fuzzy search)', 'info');
         return { found: false };
     } catch (error) {
-        log('Error finding existing answer', 'error', error);
+        log('Exception in findExistingAnswer when querying qanda table', 'error', {
+            error: error.message,
+            stack: error.stack
+        });
         return { found: false };
     }
+}
+
+/**
+ * Generate an embedding vector for a text using OpenAI API
+ * @param {string} text - The text to generate embedding for
+ * @param {string} apiKey - OpenAI API key
+ * @returns {Promise<Array<number>|null>} - Promise resolving to embedding vector or null on error
+ */
+async function generateEmbedding(text, apiKey) {
+    try {
+        log('Generating embedding for text', 'info', { textLength: text.length });
+        
+        const response = await fetch('https://api.openai.com/v1/embeddings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: "text-embedding-3-small",
+                input: text
+            })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            log('OpenAI API error generating embedding', 'error', {
+                status: response.status,
+                text: errorText
+            });
+            return null;
+        }
+        
+        const responseData = await response.json();
+        
+        if (!responseData.data || !responseData.data[0] || !responseData.data[0].embedding) {
+            log('Unexpected API response format for embedding', 'error', responseData);
+            return null;
+        }
+        
+        return responseData.data[0].embedding;
+    } catch (error) {
+        log('Error generating embedding', 'error', error);
+        return null;
+    }
+}
+
+/**
+ * Calculate cosine similarity between two embedding vectors
+ * @param {Array<number>} vecA - First embedding vector
+ * @param {Array<number>} vecB - Second embedding vector
+ * @returns {number} - Similarity score between 0 and 1
+ */
+function calculateCosineSimilarity(vecA, vecB) {
+    if (!vecA || !vecB || vecA.length !== vecB.length) {
+        return 0;
+    }
+    
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    
+    for (let i = 0; i < vecA.length; i++) {
+        dotProduct += vecA[i] * vecB[i];
+        normA += vecA[i] * vecA[i];
+        normB += vecB[i] * vecB[i];
+    }
+    
+    normA = Math.sqrt(normA);
+    normB = Math.sqrt(normB);
+    
+    if (normA === 0 || normB === 0) {
+        return 0;
+    }
+    
+    return dotProduct / (normA * normB);
+}
+
+/**
+ * Extract business-related terms from text that are likely relevant for search
+ * @param {string} text - The input text
+ * @returns {Array<string>} - Array of business terms
+ */
+function extractBusinessTerms(text) {
+    // Common business and e-commerce related terms
+    const businessTermPatterns = [
+        'delivery', 'shipping', 'order', 'arrival', 'arrive', 'receive',
+        'timeline', 'schedule', 'time', 'date', 'when', 'expect',
+        'price', 'cost', 'discount', 'offer', 'deal', 'promotion',
+        'refund', 'return', 'cancel', 'warranty', 'guarantee',
+        'product', 'item', 'purchase', 'buying', 'bought',
+        'payment', 'invoice', 'billing', 'subscription',
+        'account', 'login', 'password', 'profile',
+        'support', 'help', 'service', 'contact',
+        'availability', 'stock', 'inventory',
+        'feature', 'specification', 'detail',
+        'track', 'status', 'update',
+        'download', 'upload', 'install',
+        'version', 'model', 'size', 'color'
+    ];
+    
+    const lowerText = text.toLowerCase();
+    return businessTermPatterns.filter(term => lowerText.includes(term));
 }
 
 /**
@@ -3418,45 +4152,56 @@ Content: ${formattedContent}
             messages: [
                 {
                     role: "system",
-                    content: `You are an AI assistant specialized in finding answers to questions within a collection of emails.
+                    content: `You are a strict business knowledge assistant. Your ONLY job is to find actual answers to questions - NOT to summarize or interpret the questions.
 
-Your task:
-1. Analyze the provided emails to find information relevant to the user's question
-2. If you find a clear, factual answer, provide it concisely
-3. Only provide information that is directly supported by the emails - do not make up or infer information
-4. Include brief references to support your answer (email sender, date, and a short relevant quote)
-5. If you cannot find a relevant answer, clearly state that no answer was found
+STRICT RULES - ONLY PROVIDE ANSWERS IF:
+✅ The emails contain a direct response to the question
+✅ The emails provide specific facts, data, or information that answers the question
+✅ Someone explicitly answers the question in their reply
+✅ The emails contain clear instructions, procedures, or specifications requested
 
-Format your response exactly like this JSON:
+❌ NEVER PROVIDE AN ANSWER IF:
+❌ You're just restating what the question is asking
+❌ You're summarizing the question or describing the request
+❌ You're interpreting what someone "is asking for"
+❌ The emails only contain the question but no answer
+❌ You're speculating or inferring information
+
+EXAMPLES:
+Question: "What is our delivery time?"
+✅ GOOD: "Standard delivery is 3-5 business days" (if this info exists in emails)
+❌ BAD: "John is asking about delivery times" (this is just restating the question)
+
+Question: "Can you send me the report?"
+✅ GOOD: "Report sent via email attachment on Monday" (if someone responded)
+❌ BAD: "Sarah is requesting the report" (this is just describing the request)
+
+Question: "Do you have time to review emails?"
+✅ GOOD: "Yes, I can review them this afternoon" (if someone replied this)
+❌ BAD: "Marcus is asking if Philip has time to review" (this is just summarizing)
+
+CRITICAL TEST: Before providing any answer, ask:
+"Does this answer actually tell me something I didn't already know from reading the question?"
+
+If the answer is NO, then return null.
+
+Response format:
 {
-  "answer": "The factual answer based on the emails",
-  "confidence": 0.8,
-  "references": [
-    {"email_id": "ID from email", "source": "Sender's name", "date": "Email date", "quote": "Relevant text from email"}
-  ],
-  "keywords": ["keyword1", "keyword2", "..."]
-}
-
-If no answer can be found, use this format:
-{
-  "answer": null,
+  "answer": null,  // ONLY provide actual answers, not summaries
   "confidence": 0,
+  "answer_type": null,
   "references": [],
-  "keywords": ["keyword1", "keyword2", "..."]
+  "keywords": ["relevant", "search", "terms"]
 }
 
-IMPORTANT:
-- Maintain a high standard for accuracy - only provide answers you are confident about
-- Be precise with references, using exact quotes from the emails
-- Sort references with most relevant information first
-- Keywords should capture main topics related to the question for future search`
+BE EXTREMELY STRICT. When in doubt, return null. It's better to have no answer than a useless summary.`
                 },
                 {
                     role: "user",
-                    content: `Question: ${questionText}\n\nHere are the emails to search through:\n\n${emailsContent}`
+                    content: `Find a specific, actionable answer to this question: ${questionText}\n\nSearch through these emails:\n\n${emailsContent}`
                 }
             ],
-            temperature: 0.3
+            temperature: 0.2
         };
         
         // Call the OpenAI API
@@ -3497,21 +4242,32 @@ IMPORTANT:
             const parsedResponse = JSON.parse(jsonContent);
             
             // Check if an answer was found
-            if (parsedResponse.answer === null) {
-                log('No answer found for question', 'info', { 
+            if (parsedResponse.answer === null || !parsedResponse.answer) {
+                log('No actionable answer found for question', 'info', { 
                     question: questionText,
-                    keywords: parsedResponse.keywords || []
+                    keywords: parsedResponse.keywords || [],
+                    confidence: parsedResponse.confidence
                 });
                 return {
                     success: false,
-                    error: 'No relevant information found in team emails',
+                    error: 'No actionable answer found in team emails',
                     keywords: parsedResponse.keywords || []
                 };
             }
             
+            // Log successful answer with details
+            log('Found actionable answer for question', 'info', {
+                question: questionText,
+                answerType: parsedResponse.answer_type,
+                confidence: parsedResponse.confidence,
+                referencesCount: parsedResponse.references?.length || 0,
+                answerPreview: parsedResponse.answer.substring(0, 100) + '...'
+            });
+            
             return {
                 success: true,
                 answer: parsedResponse.answer,
+                answerType: parsedResponse.answer_type,
                 confidence: parsedResponse.confidence,
                 references: parsedResponse.references || [],
                 keywords: parsedResponse.keywords || []
@@ -3539,96 +4295,46 @@ IMPORTANT:
  * @param {boolean} isUserVerified - Whether this is a user-verified answer (default: false)
  * @returns {Promise<Object>} - Promise with result of save operation
  */
-async function saveQuestionAnswer(question, answer, references, teamId, keywords = [], isUserVerified = false) {
+async function saveQuestionAnswer(question, answer, references, teamId, keywords = [], isUserVerified = false, confidenceScore = null, sourceFilename = null) {
     try {
-        log('Saving question and answer to database', 'info', { 
-            question, 
-            answer, 
-            keywords,
-            referencesCount: references ? references.length : 0,
-            isUserVerified
-        });
-        
-        // Get authentication token
-        const token = await getAuthToken();
-        if (!token) {
-            log('No authentication token available for saving Q&A', 'error');
-            return {
-                success: false,
-                error: 'Authentication required to save Q&A'
-            };
-        }
-        
-        // Get user ID
+        const id = generateUUID();
         const userId = await getUserId();
-        if (!userId) {
-            log('No user ID available for saving Q&A', 'error');
-            return {
-                success: false,
-                error: 'User ID required to save Q&A'
-            };
-        }
-        
-        // Generate a UUID for the new record
-        // Using a simple UUID generation method that works in browsers
-        const uuid = generateUUID();
-        log('Generated UUID for new Q&A record', 'info', uuid);
-        
-        // Prepare the data to save
-        const qaData = {
-            id: uuid,
+
+        log('Saving question and answer to database', 'info', {
+            question,
+            answer,
+            referencesCount: references?.length || 0,
+            keywords,
+            isUserVerified,
+            sourceFilename
+        });
+
+        const response = await apiRequest('/qanda', 'POST', {
+            id,
             question_text: question,
             answer_text: answer,
             keywords: keywords,
-            confidence_score: references && references.length > 0 ? 0.8 : 0.5,
+            confidence_score: confidenceScore,
             team_id: teamId,
             created_by: userId,
             last_updated_by: userId,
-            is_verified: isUserVerified // Use the provided verification status
+            is_verified: isUserVerified,
+            source_filename: sourceFilename
+        });
+
+        if (!response.success) {
+            throw new Error(response.error || 'Failed to save Q&A pair');
+        }
+
+        return {
+            success: true,
+            id: id
         };
-        
-        // If we have references, add the source_message_id
-        if (references && references.length > 0 && references[0].email_id) {
-            qaData.source_message_id = references[0].email_id;
-        }
-        
-        log('Preparing to save Q&A data:', 'info', qaData);
-        
-        // Now actually save to the database
-        try {
-            const insertResponse = await apiRequest(
-                'qanda',
-                'POST',
-                qaData
-            );
-            
-            if (!insertResponse.success) {
-                log('Error inserting Q&A data', 'error', insertResponse.error);
-                return {
-                    success: false,
-                    error: insertResponse.error || 'Failed to save Q&A data'
-                };
-            }
-            
-            log('Successfully saved Q&A data to database', 'info', insertResponse.data);
-            
-            return {
-                success: true,
-                id: uuid,
-                message: 'Q&A saved successfully'
-            };
-        } catch (dbError) {
-            log('Database error saving Q&A data', 'error', dbError);
-            return {
-                success: false,
-                error: dbError.message || 'Database error saving Q&A'
-            };
-        }
     } catch (error) {
-        log('Error saving question and answer', 'error', error);
+        log('Error saving Q&A pair', 'error', error);
         return {
             success: false,
-            error: error.message || 'Failed to save question and answer'
+            error: error.message
         };
     }
 }
@@ -3710,7 +4416,8 @@ async function loadQandAData(teamId, search = null, onlyVerified = false) {
             updatedAt: item.updated_at,
             createdBy: item.created_by,
             updatedBy: item.last_updated_by,
-            sourceMessageId: item.source_message_id
+            sourceMessageId: item.source_message_id,
+            sourceFilename: item.source_filename
         }));
         
         return {
@@ -3736,5 +4443,1633 @@ Object.assign(window.OpsieApi, {
     saveQuestionAnswer,
     loadQandAData,
     generateUUID,
+    generateEmbedding,
+    calculateCosineSimilarity,
+    extractBusinessTerms,
+    analyzeQuestionRelationships,
     setLoading,
 });
+
+/**
+ * Enhances question matching by checking if a new question is semantically related to existing ones
+ * @param {string} questionText - The new question text
+ * @param {string} teamId - The team ID
+ * @param {string} apiKey - OpenAI API key
+ * @returns {Promise<Object>} - Promise with semantic analysis results
+ */
+async function analyzeQuestionRelationships(questionText, teamId, apiKey) {
+    try {
+        log('Analyzing question for semantic relationships', 'info', { questionText });
+        
+        // Get all existing questions from the database
+        const existingQAQuery = `qanda?team_id=eq.${teamId}&select=id,question_text,answer_text,is_verified&order=created_at.desc&limit=50`;
+        const existingQAResponse = await apiRequest(existingQAQuery, 'GET');
+        
+        if (!existingQAResponse.success || !existingQAResponse.data || existingQAResponse.data.length === 0) {
+            log('No existing Q&A data found for semantic analysis', 'info');
+            return { 
+                success: true,
+                isRelated: false,
+                message: 'No existing questions to compare with'
+            };
+        }
+        
+        const existingQA = existingQAResponse.data;
+        log(`Retrieved ${existingQA.length} existing Q&A pairs for semantic analysis`, 'info');
+        
+        // Format the existing questions for the AI
+        const existingQuestions = existingQA.map(qa => ({
+            id: qa.id,
+            question: qa.question_text,
+            answer: qa.answer_text || 'No answer',
+            isVerified: qa.is_verified
+        }));
+        
+        // Use OpenAI to analyze if the new question is semantically related to any existing ones
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are an AI specialized in semantic understanding of questions. 
+Your task is to determine if a new question is semantically similar to any existing questions in a database.
+
+Analyze the new question and the list of existing questions. For each existing question, determine:
+1. If it's asking for the same information despite different wording
+2. The similarity score (0.0-1.0) indicating how closely they match semantically
+3. If the existing question's answer would appropriately answer the new question
+
+Output your analysis in JSON format:
+{
+  "isRelated": true/false,
+  "relatedQuestions": [
+    {
+      "id": "existing-question-id",
+      "question": "existing question text",
+      "similarity": 0.92,
+      "explanation": "Brief explanation of how they're related"
+    }
+  ],
+  "recommendedAction": "use-existing" OR "create-new",
+  "explanation": "Explanation of your recommendation"
+}
+
+Only include existing questions with similarity scores above 0.7 in the relatedQuestions array.
+If no questions are sufficiently similar, set isRelated to false and return an empty relatedQuestions array.`
+                    },
+                    {
+                        role: "user",
+                        content: `New question: "${questionText}"
+
+Existing questions:
+${JSON.stringify(existingQuestions, null, 2)}`
+                    }
+                ],
+                temperature: 0.3
+            })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            log('OpenAI API error during question relationship analysis', 'error', {
+                status: response.status,
+                text: errorText
+            });
+            return {
+                success: false,
+                error: `OpenAI API error: ${response.status} - ${errorText}`
+            };
+        }
+        
+        const responseData = await response.json();
+        const content = responseData.choices[0].message.content;
+        
+        // Extract JSON from the response
+        const jsonContent = extractContentFromCodeBlock(content);
+        const analysis = JSON.parse(jsonContent);
+        
+        log('Question relationship analysis complete', 'info', analysis);
+        
+        return {
+            success: true,
+            ...analysis
+        };
+    } catch (error) {
+        log('Error analyzing question relationships', 'error', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to analyze question relationships',
+            isRelated: false
+        };
+    }
+}
+
+/**
+ * Process a document and generate Q&A pairs
+ * @param {File} file - The uploaded document file
+ * @param {string} teamId - The team ID
+ * @returns {Promise<Object>} - Promise resolving to processing results
+ */
+async function processDocumentForQA(file, teamId) {
+    try {
+        log('Processing document for Q&A generation', 'info', {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type,
+            teamId: teamId
+        });
+
+        // Get OpenAI API key
+        const apiKey = await getOpenAIApiKey();
+        if (!apiKey) {
+            throw new Error('OpenAI API key is required for document processing');
+        }
+
+        // Define the extraction prompt
+        const extractionPrompt = `You are analyzing a business document that may contain technical specifications, product details, or other business-relevant information. 
+        
+        Please extract all relevant information, focusing on:
+        1. Product specifications and measurements
+        2. Technical details and capabilities
+        3. Material information
+        4. Pricing or cost-related details (if any)
+        5. Compatibility or installation requirements
+        6. Any other business-critical information
+        
+        Ignore any irrelevant metadata like drawing numbers, project IDs, or administrative details unless they are essential product identifiers.
+        
+        Format the information in a clear, structured way that emphasizes the practical, business-relevant details.
+        
+        If you see any measurements or technical specifications in the image, be sure to note them precisely with their units.`;
+
+        let extractedContent;
+
+        // Handle PDFs differently from images
+        if (file.type === 'application/pdf') {
+            log('Processing PDF file', 'info');
+            try {
+                // Convert file to ArrayBuffer for pdf.js
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // Load the PDF document using pdf.js
+                const pdfjsLib = window['pdfjs-dist/build/pdf'];
+                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                log('PDF loaded successfully', 'info', { numPages: pdf.numPages });
+
+                // Create a canvas element for rendering
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                // Process each page
+                let allContent = [];
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    
+                    // Extract text
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    
+                    // Render page to canvas
+                    const viewport = page.getViewport({ scale: 1.5 }); // Increased scale for better quality
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+                    
+                    // Convert canvas to base64 image
+                    const pageImage = canvas.toDataURL('image/jpeg', 0.95);
+                    
+                    // Extract base64 data from data URL
+                    const base64Data = pageImage.split(',')[1];
+                    
+                    log('Processing page image', 'info', {
+                        pageNumber: i,
+                        imageSize: base64Data.length,
+                        dimensions: `${canvas.width}x${canvas.height}`
+                    });
+
+                    // Use Vision API for the page image
+                    log('Preparing Vision API request', 'info', {
+                        pageNumber: i,
+                        modelName: "o4-mini",
+                        promptLength: extractionPrompt.length
+                    });
+
+                    const visionResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            model: "o4-mini",
+                            messages: [
+                                {
+                                    role: "user",
+                                    content: [
+                                        { type: "text", text: extractionPrompt },
+                                        {
+                                            type: "image_url",
+                                            image_url: {
+                                                url: `data:image/jpeg;base64,${base64Data}`
+                                            }
+                                        }
+                                    ]
+                                }
+                            ],
+                            max_completion_tokens: 4000
+                        })
+                    });
+
+                    if (!visionResponse.ok) {
+                        const errorText = await visionResponse.text();
+                        log('Vision API error response', 'error', {
+                            status: visionResponse.status,
+                            statusText: visionResponse.statusText,
+                            errorText: errorText,
+                            responseHeaders: Object.fromEntries([...visionResponse.headers.entries()])
+                        });
+
+                        try {
+                            const errorJson = JSON.parse(errorText);
+                            log('Parsed error details', 'error', {
+                                errorType: errorJson.error?.type,
+                                errorMessage: errorJson.error?.message,
+                                errorCode: errorJson.error?.code
+                            });
+                            throw new Error(`Vision API Error: ${errorJson.error?.message || 'Unknown error'}`);
+                        } catch (e) {
+                            throw new Error(`Failed to process page ${i} (${visionResponse.status}): ${errorText}`);
+                        }
+                    }
+
+                    const visionData = await visionResponse.json();
+                    const visionContent = visionData.choices[0].message.content;
+
+                    // Combine text and vision analysis
+                    allContent.push(pageText, visionContent);
+                }
+
+                extractedContent = allContent.join('\n\n');
+                log('PDF processed successfully', 'info', {
+                    contentLength: extractedContent.length,
+                    preview: extractedContent.substring(0, 100) + '...'
+                });
+
+            } catch (error) {
+                log('Error processing PDF', 'error', error);
+                throw new Error('Failed to process PDF: ' + error.message);
+            }
+        } else {
+            // Handle non-PDF files (images) with Vision API directly
+            log('Processing image file', 'info');
+            const base64Content = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.readAsDataURL(file);
+            });
+
+            const extractionResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: "o4-mini",
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                { type: "text", text: extractionPrompt },
+                                {
+                                    type: "image_url",
+                                    image_url: {
+                                        url: `data:${file.type};base64,${base64Content}`
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_completion_tokens: 4000
+                })
+            });
+
+            if (!extractionResponse.ok) {
+                throw new Error(`Failed to process image: ${extractionResponse.status}`);
+            }
+
+            const extractionData = await extractionResponse.json();
+            extractedContent = extractionData.choices[0].message.content;
+        }
+
+        // Continue with Q&A generation using the extracted content
+        log('Generating Q&A pairs from extracted content', 'info');
+        
+        const qaPrompt = `You are helping create a knowledge base for business employees who need quick, accurate answers about various business documents and information when communicating with stakeholders.
+
+        Analyze the following content and generate question-answer pairs that would be valuable in business scenarios. The content could be from any type of business document (technical specifications, product descriptions, process documents, policies, reports, etc.).
+
+        Focus on extracting information that would be useful for:
+        - Answering stakeholder inquiries
+        - Understanding key facts and figures
+        - Clarifying important details and requirements
+        - Supporting decision-making
+        - Facilitating effective communication
+
+        Rules:
+        1. Only create Q&A pairs for information that is explicitly present in the content
+        2. Make questions clear, specific, and directly relevant to business needs
+        3. Provide precise answers that include all relevant details (numbers, dates, specifications, etc.)
+        4. Focus on substantive information rather than formatting or metadata
+        5. Skip creating questions if the information is unclear or incomplete
+        6. Maintain any specific units, terminology, or formatting from the original content
+        7. Adapt the detail level and technical depth to match the source material
+
+        Format the output as JSON:
+        {
+            "qaPairs": [
+                {
+                    "question": "string: A clear, specific business question",
+                    "answer": "string: A precise, detailed answer",
+                    "keywords": ["array: relevant search terms"],
+                    "confidence_score": "number: 0.0 to 1.0"
+                }
+            ]
+        }
+
+        Content to analyze:
+        ${extractedContent}`;
+
+        const qaResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "gpt-4",
+                messages: [
+                    { role: "user", content: qaPrompt }
+                ],
+                max_tokens: 4000
+            })
+        });
+
+        if (!qaResponse.ok) {
+            const errorText = await qaResponse.text();
+            log('Q&A generation error', 'error', {
+                status: qaResponse.status,
+                statusText: qaResponse.statusText,
+                errorText: errorText
+            });
+            throw new Error(`Failed to generate Q&A pairs: ${qaResponse.status} - ${errorText}`);
+        }
+
+        const qaData = await qaResponse.json();
+        const qaPairs = JSON.parse(qaData.choices[0].message.content);
+
+        log('Successfully generated Q&A pairs', 'info', {
+            numberOfPairs: qaPairs.qaPairs.length,
+            sampleQuestion: qaPairs.qaPairs[0]?.question
+        });
+
+        // Save each Q&A pair to the database
+        const savedPairs = [];
+        for (const pair of qaPairs.qaPairs) {
+            try {
+                const result = await saveQuestionAnswer(
+                    pair.question,
+                    pair.answer,
+                    [], // no references for document-generated Q&A
+                    teamId,
+                    pair.keywords,
+                    false, // not verified
+                    pair.confidence_score,
+                    file.name // Add the filename here
+                );
+                if (result.success) {
+                    savedPairs.push(result);
+                }
+                log('Saved Q&A pair', 'info', {
+                    question: pair.question,
+                    success: result.success,
+                    id: result.id,
+                    sourceFilename: file.name
+                });
+            } catch (error) {
+                log('Error saving Q&A pair', 'error', error);
+                // Continue with other pairs even if one fails
+            }
+        }
+
+        return {
+            success: true,
+            message: `Successfully processed document and generated ${savedPairs.length} Q&A pairs`,
+            data: {
+                totalPairs: qaPairs.qaPairs.length,
+                savedPairs: savedPairs.length
+            }
+        };
+
+    } catch (error) {
+        log('Error processing document', 'error', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to process document'
+        };
+    }
+}
+
+// Add to the window.OpsieApi object
+window.OpsieApi.processDocumentForQA = processDocumentForQA;
+
+/**
+ * Check if an email address is already in use
+ * @param {string} email - The email address to check
+ * @returns {Promise} - Whether the email is already in use
+ */
+async function checkEmailExists(email) {
+  try {
+    log('Checking if email already exists:', 'info', email);
+    
+    // Try to search for users with this email using the REST API
+    const response = await fetch(`${API_BASE_URL}/users?email=eq.${encodeURIComponent(email)}&select=id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY
+      }
+    });
+    
+    if (!response.ok) {
+      log('Error checking if email exists - status:', 'error', response.status);
+      return { success: false, error: 'Failed to check email', exists: false };
+    }
+    
+    const users = await response.json();
+    log('Email exists check response:', 'info', users);
+    
+    // If we find any users with this email, it exists
+    const exists = Array.isArray(users) && users.length > 0;
+    
+    return { 
+      success: true, 
+      exists: exists,
+      data: users
+    };
+  } catch (err) {
+    log('Exception when checking if email exists:', 'error', err);
+    return { success: false, error: err.message, exists: false };
+  }
+}
+
+/**
+ * Normalize user data to handle different response formats from Supabase
+ * @param {Object} data - The response data from Supabase
+ * @returns {Object} - Normalized user data
+ */
+function normalizeUserData(data) {
+  if (!data) return null;
+  
+  // If the data already has a user object, use it
+  if (data.user) {
+    return {
+      id: data.user.id,
+      email: data.user.email,
+      created_at: data.user.created_at || data.user.created_at,
+      // Add any other fields we need
+      ...data.user
+    };
+  }
+  
+  // If the data has id and email at the root (Supabase Auth API format)
+  if (data.id && data.email) {
+    return {
+      id: data.id,
+      email: data.email,
+      created_at: data.created_at,
+      // Add any other fields we need
+      ...data
+    };
+  }
+  
+  // If we can't find user data, return null
+  return null;
+}
+
+/**
+ * Create user record in the database
+ * @param {string} userId - User ID from auth
+ * @param {string} email - User's email
+ * @param {string} firstName - User's first name
+ * @param {string} lastName - User's last name
+ * @returns {Promise} - Result of user record creation
+ */
+async function createUserRecord(userId, email, firstName = '', lastName = '') {
+  try {
+    log('Creating user record in database:', 'info', { userId, email, firstName, lastName });
+    
+    const response = await fetch(`${API_BASE_URL}/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({
+        id: userId,
+        email: email,
+        first_name: firstName,
+        last_name: lastName,
+        created_at: new Date().toISOString()
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      log('Error creating user record:', 'error', { status: response.status, error: errorText });
+      return { success: false, error: errorText };
+    }
+    
+    log('User record created successfully', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception creating user record:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Sign up a new user with email and password
+ * @param {string} email - User's email
+ * @param {string} password - User's password
+ * @param {string} firstName - User's first name
+ * @param {string} lastName - User's last name
+ * @returns {Promise} - The result of the sign up operation
+ */
+async function signUp(email, password, firstName = '', lastName = '') {
+  try {
+    log('======= SIGNUP PROCESS STARTED =======', 'info');
+    log('Signing up user with email:', 'info', email);
+    log('Password length:', 'info', password ? password.length : 0);
+    log('First name provided:', 'info', !!firstName);
+    log('Last name provided:', 'info', !!lastName);
+    
+    // Capitalize first letter of first and last name
+    if (firstName) {
+      firstName = firstName.charAt(0).toUpperCase() + firstName.slice(1);
+    }
+    
+    if (lastName) {
+      lastName = lastName.charAt(0).toUpperCase() + lastName.slice(1);
+    }
+    
+    // First, check if the email is already in use
+    log('Checking if email is already in use', 'info');
+    const emailCheck = await checkEmailExists(email);
+    
+    if (emailCheck.success && emailCheck.exists) {
+      log('Email already in use:', 'error', email);
+      return { success: false, error: 'Email address is already in use', code: 'email_in_use' };
+    }
+    
+    // If email check failed, log but continue (we'll let Supabase handle it)
+    if (!emailCheck.success) {
+      log('Email existence check failed, proceeding with signup anyway:', 'warning', emailCheck.error);
+    }
+    
+    // Prepare signup request
+    const supabaseUrl = API_BASE_URL.replace('/rest/v1', '');
+    const requestBody = JSON.stringify({
+      email,
+      password
+    });
+    
+    log('Signup request details:', 'info', {
+      url: `${supabaseUrl}/auth/v1/signup`,
+      method: 'POST'
+    });
+    
+    const response = await fetch(`${supabaseUrl}/auth/v1/signup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY
+      },
+      body: requestBody
+    });
+    
+    log('Signup response status:', 'info', response.status);
+    
+    const responseText = await response.text();
+    log('Signup raw response text:', 'info', responseText);
+    
+    let data;
+    try {
+      data = JSON.parse(responseText);
+      log('Parsed response data:', 'info', data);
+    } catch (e) {
+      log('Error parsing signup response:', 'error', e);
+      return { success: false, error: 'Failed to parse response: ' + responseText };
+    }
+    
+    if (!response.ok) {
+      log('Error signing up - HTTP status:', 'error', response.status);
+      log('Error response data:', 'error', data);
+      return { success: false, error: data.error || data.msg || 'Failed to sign up' };
+    }
+    
+    log('Auth signup successful. Full response data:', 'info', data);
+
+    // Normalize the user data
+    const userData = normalizeUserData(data);
+    log('Normalized user data:', 'info', userData);
+
+    if (userData) {
+      log('User ID from signup:', 'info', userData.id);
+      log('User email from signup:', 'info', userData.email);
+    } else {
+      log('CRITICAL ERROR: Could not normalize user data from response!', 'error');
+      log('Response keys available:', 'error', Object.keys(data));
+      return { success: false, error: 'Auth signup succeeded but no valid user data returned' };
+    }
+    
+    // Check for confirmation URL - this indicates a need for email verification
+    if (data.confirmation_url) {
+      log('Confirmation URL present, suggesting email verification required:', 'info', data.confirmation_url);
+    }
+    
+    // Check for access token in the response
+    if (data.access_token) {
+      log('Access token present in signup response', 'info');
+    }
+    
+    // If we have a user ID, proceed with creating the user record
+    const userId = userData.id;
+    log('Attempting to create user record in database with ID:', 'info', userId);
+    const userRecordResult = await createUserRecord(userId, userData.email, firstName, lastName);
+    log('User record creation result:', 'info', userRecordResult);
+    
+    if (!userRecordResult.success) {
+      log('WARNING: Auth signup succeeded but database record creation failed!', 'warning');
+      log('Error creating user record:', 'error', userRecordResult.error);
+      return { 
+        success: true, 
+        data,
+        warning: 'Auth account created but database record failed. Error: ' + 
+               (userRecordResult.error?.message || userRecordResult.error || 'Unknown error')
+      };
+    }
+    
+    log('======= SIGNUP PROCESS COMPLETED SUCCESSFULLY =======', 'info');
+    return { success: true, data };
+  } catch (err) {
+    log('Exception during sign up process:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Request password reset for a user
+ * @param {string} email - User's email address
+ * @returns {Promise} - The result of the password reset request
+ */
+async function requestPasswordReset(email) {
+  try {
+    log('Requesting password reset for email:', 'info', email);
+    
+    const supabaseUrl = API_BASE_URL.replace('/rest/v1', '');
+    const response = await fetch(`${supabaseUrl}/auth/v1/recover`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({ email })
+    });
+    
+    log('Password reset request response status:', 'info', response.status);
+    
+    if (!response.ok) {
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        errorData = { error: 'Unknown error occurred' };
+      }
+      log('Error requesting password reset:', 'error', errorData);
+      return { success: false, error: errorData.error || 'Failed to request password reset' };
+    }
+    
+    log('Password reset email sent successfully', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception during password reset request:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+// Team Management Functions
+
+/**
+ * Request to join a team using access code
+ */
+async function requestToJoinTeam(accessCode) {
+  try {
+    log('Requesting to join team with access code:', 'info', { accessCode });
+    
+    const token = await getAuthToken();
+    if (!token) {
+      log('No authentication token found', 'error');
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      log('No user ID found', 'error');
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    log('Making join request with:', 'info', { 
+      accessCode: accessCode.toUpperCase(), 
+      userId,
+      url: `${API_BASE_URL}/rpc/request_to_join_team`
+    });
+    
+    const response = await fetch(`${API_BASE_URL}/rpc/request_to_join_team`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        p_access_code: accessCode.toUpperCase(),
+        p_user_id: userId
+      })
+    });
+    
+    log('Response status:', 'info', { 
+      status: response.status, 
+      statusText: response.statusText,
+      ok: response.ok 
+    });
+    
+    const result = await response.json();
+    log('Response body:', 'info', result);
+    
+    if (!response.ok) {
+      log('HTTP error in join request:', 'error', { 
+        status: response.status, 
+        statusText: response.statusText,
+        result 
+      });
+      return { success: false, error: result.message || 'Failed to request team join' };
+    }
+    
+    // Check if the RPC function returned an error
+    if (result && result.success === false) {
+      log('RPC function returned error:', 'error', result);
+      return { success: false, error: result.error || 'Join request failed' };
+    }
+    
+    log('Team join request submitted successfully', 'info', result);
+    return { 
+      success: true, 
+      message: 'Join request submitted successfully!',
+      data: result
+    };
+    
+  } catch (err) {
+    log('Exception during team join request:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Create a new team
+ */
+async function createTeam(teamName, options = {}) {
+  try {
+    log('Creating new team:', 'info', { teamName, options });
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/rpc/create_team`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        p_team_name: teamName,
+        p_organization: options.organization || null,
+        p_invoice_email: options.invoiceEmail || null,
+        p_billing_street: options.billingStreet || null,
+        p_billing_city: options.billingCity || null,
+        p_billing_region: options.billingRegion || null,
+        p_billing_country: options.billingCountry || null,
+        p_admin_user_id: userId
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      log('Error creating team:', 'error', result);
+      return { success: false, error: result.message || 'Failed to create team' };
+    }
+    
+    // Update local storage with new team ID
+    if (result.team_id) {
+      localStorage.setItem('currentTeamId', result.team_id);
+      localStorage.setItem('currentTeamName', teamName);
+      log('Team created and stored locally:', 'info', { teamId: result.team_id, teamName });
+    }
+    
+    log('Team created successfully', 'info', result);
+    return { 
+      success: true, 
+      message: `Team "${teamName}" created successfully!`,
+      data: { teamId: result.team_id, ...result }
+    };
+    
+  } catch (err) {
+    log('Exception during team creation:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Check join request status
+ */
+async function checkJoinRequestStatus() {
+  try {
+    log('Checking join request status', 'info');
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    log('Checking join requests for user:', 'info', { userId });
+    
+    const response = await fetch(`${API_BASE_URL}/join_requests?user_id=eq.${userId}&order=request_date.desc&limit=1`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    log('Join request status response:', 'info', { 
+      status: response.status, 
+      statusText: response.statusText,
+      ok: response.ok 
+    });
+    
+    const requests = await response.json();
+    log('Join requests found:', 'info', requests);
+    
+    if (!response.ok) {
+      log('Error checking join request status:', 'error', requests);
+      return { success: false, error: 'Failed to check request status' };
+    }
+    
+    if (!requests || requests.length === 0) {
+      log('No join requests found for user', 'info');
+      return { success: true, data: { status: 'none' } };
+    }
+    
+    const latestRequest = requests[0];
+    log('Latest join request:', 'info', latestRequest);
+    
+    if (latestRequest.status === 'approved') {
+      // Request was approved, update local storage and return success
+      if (latestRequest.team_id) {
+        localStorage.setItem('currentTeamId', latestRequest.team_id);
+        log('Join request approved, team ID stored:', 'info', latestRequest.team_id);
+      }
+      
+      return { 
+        success: true, 
+        data: { 
+          approved: true, 
+          status: 'approved',
+          teamId: latestRequest.team_id 
+        } 
+      };
+    } else if (latestRequest.status === 'rejected') {
+      log('Join request was rejected', 'info', latestRequest);
+      return { 
+        success: true, 
+        data: { 
+          approved: false, 
+          status: 'rejected' 
+        } 
+      };
+    } else {
+      log('Join request is pending', 'info', latestRequest);
+      return { 
+        success: true, 
+        data: { 
+          approved: null, 
+          status: 'pending' 
+        } 
+      };
+    }
+    
+  } catch (err) {
+    log('Exception during join request status check:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Get the current user's pending join requests for display in the UI
+ * @returns {Promise<object>} - User's join request information
+ */
+async function getUserPendingJoinRequest() {
+  try {
+    log('Getting user pending join request for UI display', 'info');
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    // Get pending join requests for this user
+    const response = await fetch(`${API_BASE_URL}/join_requests?user_id=eq.${userId}&status=eq.pending&order=request_date.desc&limit=1`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    const requests = await response.json();
+    
+    if (!response.ok) {
+      log('Error getting user pending join request:', 'error', requests);
+      return { success: false, error: 'Failed to get pending request' };
+    }
+    
+    if (!requests || requests.length === 0) {
+      log('No pending join requests found for user', 'info');
+      return { success: true, data: null };
+    }
+    
+    const pendingRequest = requests[0];
+    
+    log('Found pending join request:', 'info', pendingRequest);
+    
+    return {
+      success: true,
+      data: {
+        id: pendingRequest.id,
+        teamId: pendingRequest.team_id,
+        status: pendingRequest.status,
+        requestDate: pendingRequest.request_date
+      }
+    };
+    
+  } catch (err) {
+    log('Exception getting user pending join request:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Get pending join requests for a team (admin only)
+ */
+async function getTeamJoinRequests(teamId) {
+  try {
+    log('=== GET TEAM JOIN REQUESTS START ===', 'info', { teamId });
+    
+    if (!teamId) {
+      log('No team ID provided to getTeamJoinRequests', 'error');
+      return { success: false, error: 'Team ID is required' };
+    }
+    
+    const token = await getAuthToken();
+    if (!token) {
+      log('No auth token available', 'error');
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      log('No user ID available', 'error');
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    log('Making RPC call to get_team_join_requests', 'info', { 
+      teamId, 
+      userId,
+      hasToken: !!token 
+    });
+    
+    const response = await fetch(`${API_BASE_URL}/rpc/get_team_join_requests`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        p_team_id: teamId,
+        p_admin_user_id: userId
+      })
+    });
+    
+    log('RPC response received:', 'info', { 
+      status: response.status, 
+      statusText: response.statusText,
+      ok: response.ok 
+    });
+    
+    const result = await response.json();
+    log('RPC response body:', 'info', result);
+    
+    if (!response.ok) {
+      log('HTTP error getting team join requests:', 'error', { 
+        status: response.status, 
+        statusText: response.statusText,
+        result 
+      });
+      return { success: false, error: result.message || 'Failed to get join requests' };
+    }
+    
+    if (result && result.success === false) {
+      log('RPC function returned error:', 'error', result);
+      return { success: false, error: result.error || 'Failed to get join requests' };
+    }
+    
+    log('Team join requests retrieved successfully', 'info', result);
+    log('Extracting requests from result:', 'info', { 
+      hasRequests: !!result.requests,
+      requestsType: typeof result.requests,
+      requestsLength: result.requests ? result.requests.length : 'N/A',
+      requests: result.requests 
+    });
+    
+    return { 
+      success: true, 
+      data: result.requests || []
+    };
+    
+  } catch (err) {
+    log('Exception getting team join requests:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Approve or reject a join request
+ */
+async function respondToJoinRequest(requestId, approved) {
+  try {
+    log('Responding to join request:', 'info', { requestId, approved });
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/rpc/respond_to_join_request`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        p_request_id: requestId,
+        p_admin_user_id: userId,
+        p_approved: approved
+      })
+    });
+    
+    log('Join request response:', 'info', { 
+      status: response.status, 
+      statusText: response.statusText,
+      ok: response.ok 
+    });
+    
+    const result = await response.json();
+    log('Join request response result:', 'info', result);
+    
+    if (!response.ok) {
+      log('HTTP error responding to join request:', 'error', { 
+        status: response.status, 
+        statusText: response.statusText,
+        result 
+      });
+      return { success: false, error: result.message || 'Failed to respond to join request' };
+    }
+    
+    if (result && result.success === false) {
+      log('RPC function returned error:', 'error', result);
+      return { success: false, error: result.error || 'Failed to respond to join request' };
+    }
+    
+    log('Join request response submitted successfully', 'info', result);
+    return { 
+      success: true, 
+      message: result.message || (approved ? 'Request approved' : 'Request rejected'),
+      data: result
+    };
+    
+  } catch (err) {
+    log('Exception responding to join request:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Remove a team member (admin only)
+ */
+async function removeTeamMember(memberId) {
+  try {
+    log('Removing team member with ID:', 'info', { memberId });
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    const currentTeamId = localStorage.getItem('currentTeamId');
+    if (!currentTeamId) {
+      return { success: false, error: 'No team ID found' };
+    }
+    
+    // First, check if the current user is an admin
+    const currentUserResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}&select=role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!currentUserResponse.ok) {
+      const error = await currentUserResponse.json();
+      log('Error checking current user role:', 'error', error);
+      return { success: false, error: 'Failed to verify admin status' };
+    }
+    
+    const currentUserData = await currentUserResponse.json();
+    
+    if (currentUserData.length === 0) {
+      log('Current user not found', 'error');
+      return { success: false, error: 'User not found' };
+    }
+    
+    const currentUser = currentUserData[0];
+    
+    // Verify the user is an admin
+    if (currentUser.role !== 'admin') {
+      log('Current user is not an admin, cannot remove team members', 'error');
+      return { success: false, error: 'Admin privileges required to remove team members' };
+    }
+    
+    // Verify the user to be removed exists and is part of the same team
+    const memberResponse = await fetch(`${API_BASE_URL}/users?id=eq.${memberId}&select=email,role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!memberResponse.ok) {
+      const error = await memberResponse.json();
+      log('Error checking member:', 'error', error);
+      return { success: false, error: 'Failed to verify member status' };
+    }
+    
+    const memberData = await memberResponse.json();
+    
+    if (memberData.length === 0) {
+      log('Member not found', 'error');
+      return { success: false, error: 'Member not found' };
+    }
+    
+    const member = memberData[0];
+    
+    // Prevent removing another admin
+    if (member.role === 'admin') {
+      log('Cannot remove an admin user', 'error');
+      return { success: false, error: 'Cannot remove another admin. Transfer admin rights first.' };
+    }
+    
+    // Make sure the member is part of the same team
+    if (member.team_id !== currentTeamId) {
+      log('Member is not part of the same team', 'error');
+      return { success: false, error: 'Member is not part of your team' };
+    }
+    
+    // Update the user to remove the team association and reset role
+    const updateResponse = await fetch(`${API_BASE_URL}/users?id=eq.${memberId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Prefer': 'return=representation',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        team_id: null,
+        role: 'member'
+      })
+    });
+    
+    if (!updateResponse.ok) {
+      const error = await updateResponse.json();
+      log('Error removing team member:', 'error', error);
+      return { success: false, error: 'Failed to remove team member' };
+    }
+    
+    log('Team member removed successfully', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception when removing team member:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Leave a team (member only)
+ */
+async function leaveTeam() {
+  try {
+    log('Leaving team', 'info');
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    // Check if the current user is an admin
+    const currentUserResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}&select=role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!currentUserResponse.ok) {
+      const error = await currentUserResponse.json();
+      log('Error checking current user role:', 'error', error);
+      return { success: false, error: 'Failed to verify user status' };
+    }
+    
+    const currentUserData = await currentUserResponse.json();
+    
+    if (currentUserData.length === 0) {
+      log('Current user not found', 'error');
+      return { success: false, error: 'User not found' };
+    }
+    
+    const currentUser = currentUserData[0];
+    
+    // Prevent admin from leaving if they are the only admin
+    if (currentUser.role === 'admin') {
+      // Check if there are other admins
+      const adminResponse = await fetch(`${API_BASE_URL}/users?team_id=eq.${currentUser.team_id}&role=eq.admin&select=id`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (!adminResponse.ok) {
+        const error = await adminResponse.json();
+        log('Error checking other admins:', 'error', error);
+        return { success: false, error: 'Failed to verify admin status' };
+      }
+      
+      const adminData = await adminResponse.json();
+      
+      if (adminData.length <= 1) {
+        log('Cannot leave team as the only admin', 'error');
+        return { success: false, error: 'Cannot leave team as the only admin. Transfer admin rights first or delete the team.' };
+      }
+    }
+    
+    // Update the user to remove the team association and reset role
+    const updateResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Prefer': 'return=representation',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        team_id: null,
+        role: 'member'
+      })
+    });
+    
+    if (!updateResponse.ok) {
+      const error = await updateResponse.json();
+      log('Error leaving team:', 'error', error);
+      return { success: false, error: 'Failed to leave team' };
+    }
+    
+    // Clear team-related data from localStorage
+    localStorage.removeItem('currentTeamId');
+    localStorage.removeItem('currentTeamName');
+    localStorage.removeItem('teamInfo');
+    
+    log('Left team successfully and local storage cleared', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception when leaving team:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Transfer admin role to another team member (admin only)
+ */
+async function transferAdminRole(newAdminId) {
+  try {
+    log('Transferring admin role to user:', 'info', { newAdminId });
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    // Check if the current user is an admin
+    const currentUserResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}&select=role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!currentUserResponse.ok) {
+      const error = await currentUserResponse.json();
+      log('Error checking current user role:', 'error', error);
+      return { success: false, error: 'Failed to verify admin status' };
+    }
+    
+    const currentUserData = await currentUserResponse.json();
+    
+    if (currentUserData.length === 0) {
+      log('Current user not found', 'error');
+      return { success: false, error: 'User not found' };
+    }
+    
+    const currentUser = currentUserData[0];
+    
+    // Verify the user is an admin
+    if (currentUser.role !== 'admin') {
+      log('Current user is not an admin, cannot transfer admin rights', 'error');
+      return { success: false, error: 'Admin privileges required to transfer admin rights' };
+    }
+    
+    // Verify the new admin exists and is part of the same team
+    const newAdminResponse = await fetch(`${API_BASE_URL}/users?id=eq.${newAdminId}&select=email,role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!newAdminResponse.ok) {
+      const error = await newAdminResponse.json();
+      log('Error checking new admin:', 'error', error);
+      return { success: false, error: 'Failed to verify new admin status' };
+    }
+    
+    const newAdminData = await newAdminResponse.json();
+    
+    if (newAdminData.length === 0) {
+      log('New admin not found', 'error');
+      return { success: false, error: 'New admin not found' };
+    }
+    
+    const newAdmin = newAdminData[0];
+    
+    // Make sure the new admin is part of the same team
+    if (newAdmin.team_id !== currentUser.team_id) {
+      log('New admin is not part of the same team', 'error');
+      return { success: false, error: 'New admin is not part of your team' };
+    }
+    
+    // Update the new admin's role
+    const updateNewAdminResponse = await fetch(`${API_BASE_URL}/users?id=eq.${newAdminId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Prefer': 'return=representation',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        role: 'admin'
+      })
+    });
+    
+    if (!updateNewAdminResponse.ok) {
+      const error = await updateNewAdminResponse.json();
+      log('Error updating new admin role:', 'error', error);
+      return { success: false, error: 'Failed to update new admin role' };
+    }
+    
+    // Update the current admin's role to member
+    const updateCurrentUserResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Prefer': 'return=representation',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        role: 'member'
+      })
+    });
+    
+    if (!updateCurrentUserResponse.ok) {
+      const error = await updateCurrentUserResponse.json();
+      log('Error updating current user role:', 'error', error);
+      return { success: false, error: 'Failed to update current user role' };
+    }
+    
+    log('Admin role transferred successfully', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception when transferring admin role:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Delete a team (admin only)
+ */
+async function deleteTeam() {
+  try {
+    log('Deleting team', 'info');
+    
+    const token = await getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Authentication required' };
+    }
+    
+    const userId = await getUserId();
+    if (!userId) {
+      return { success: false, error: 'User ID not found' };
+    }
+    
+    // Check if the current user is an admin
+    const currentUserResponse = await fetch(`${API_BASE_URL}/users?id=eq.${userId}&select=role,team_id`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!currentUserResponse.ok) {
+      const error = await currentUserResponse.json();
+      log('Error checking current user role:', 'error', error);
+      return { success: false, error: 'Failed to verify admin status' };
+    }
+    
+    const currentUserData = await currentUserResponse.json();
+    
+    if (currentUserData.length === 0) {
+      log('Current user not found', 'error');
+      return { success: false, error: 'User not found' };
+    }
+    
+    const currentUser = currentUserData[0];
+    
+    // Verify the user is an admin
+    if (currentUser.role !== 'admin') {
+      log('Current user is not an admin, cannot delete team', 'error');
+      return { success: false, error: 'Admin privileges required to delete team' };
+    }
+    
+    const teamId = currentUser.team_id;
+    if (!teamId) {
+      log('No team ID found', 'error');
+      return { success: false, error: 'No team found' };
+    }
+    
+    // First, remove all team members from the team and reset their roles
+    const updateMembersResponse = await fetch(`${API_BASE_URL}/users?team_id=eq.${teamId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Prefer': 'return=representation',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        team_id: null,
+        role: 'member'
+      })
+    });
+    
+    if (!updateMembersResponse.ok) {
+      const error = await updateMembersResponse.json();
+      log('Error removing team members:', 'error', error);
+      return { success: false, error: 'Failed to remove team members' };
+    }
+    
+    // Delete the team
+    const deleteTeamResponse = await fetch(`${API_BASE_URL}/teams?id=eq.${teamId}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!deleteTeamResponse.ok) {
+      const error = await deleteTeamResponse.json();
+      log('Error deleting team:', 'error', error);
+      return { success: false, error: 'Failed to delete team' };
+    }
+    
+    // Clear team-related data from localStorage
+    localStorage.removeItem('currentTeamId');
+    localStorage.removeItem('currentTeamName');
+    localStorage.removeItem('teamInfo');
+    
+    log('Team deleted successfully and local storage cleared', 'info');
+    return { success: true };
+  } catch (err) {
+    log('Exception when deleting team:', 'error', err);
+    return { success: false, error: err.message };
+  }
+}

@@ -227,9 +227,8 @@ async function showTeamSelectView(userData) {
         const pendingSection = document.getElementById('pending-request-section');
         pendingSection.style.display = 'block';
         
-        // Update the team name in the pending request section
-        const teamName = pendingRequests[0].team ? pendingRequests[0].team.name : 'Unknown team';
-        document.getElementById('requested-team-name').textContent = teamName;
+        // Update the team name in the pending request section to generic text
+        document.getElementById('requested-team-name').textContent = 'a team';
       }
       
       // Check if any request has been approved
@@ -1198,9 +1197,8 @@ async function handleRequestToJoinTeam() {
       const pendingSection = document.getElementById('pending-request-section');
       pendingSection.style.display = 'block';
       
-      // Update the team name in the pending request section
-      const teamName = result.data.teamName || 'the team';
-      document.getElementById('requested-team-name').textContent = teamName;
+      // Update the team name in the pending request section to generic text
+      document.getElementById('requested-team-name').textContent = 'a team';
     } else {
       showStatus(`Failed to join team: ${result.error}`, 'error');
     }

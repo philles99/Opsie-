@@ -12,11 +12,15 @@
     <!-- jQuery -->
     <script type="text/javascript" src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
 
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
     <!-- Office UI Fabric for styling -->
     <link rel="stylesheet" href="https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css" />
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="taskpane.css" />
+    <link rel="stylesheet" href="taskpane/taskpane.css" />
 </head>
 
 <body class="ms-font-m ms-Fabric">
@@ -24,10 +28,10 @@
         <div class="header">
             <h1>Opsie Email Assistant</h1>
             <button id="settings-button" title="Settings">Settings</button>
-            <button id="close-button" class="close-button">×</button>
+            <!-- <button id="close-button" class="close-button">×</button>-->
         </div>
         
-        <!-- Debug Information Section -->
+        <!-- Debug Information Section 
         <div class="debug-section">
             <div id="debug-info" style="background: #f0f0f0; padding: 10px; margin: 10px 0; font-size: 12px; display: none;">
                 Loading diagnostic information...
@@ -38,13 +42,13 @@
             </div>
             
             <div id="error-display" style="color: #721c24; background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; margin: 10px 0; display: none; max-height: 300px; overflow-y: auto;">
-                <!-- Errors will be displayed here -->
+                 Errors will be displayed here 
             </div>
             
             <div id="full-log-container" style="display: none; margin: 10px 0;">
                 <h3 style="font-size: 14px; margin: 5px 0;">Full Debug Log</h3>
                 <div id="full-log" style="background: #333; color: #eee; padding: 10px; font-family: monospace; font-size: 11px; height: 200px; overflow-y: auto;">
-                    <!-- Full log entries will be displayed here -->
+                     Full log entries will be displayed here 
                 </div>
             </div>
             
@@ -56,7 +60,7 @@
                     Show Full Log
                 </button>
             </div>
-        </div>
+        </div> -->
 
         <!-- Authentication Error Container -->
         <div id="auth-error-container" class="auth-container" style="display: none;">
@@ -72,31 +76,197 @@
         <!-- Authentication Container -->
         <div id="auth-container" class="auth-container" style="display: none;">
             <div class="auth-content">
-                <h2 class="ms-font-xl">Authentication Required</h2>
-                <p class="ms-font-m">Please log in to use the Opsie Email Assistant</p>
+                <!-- Authentication Error/Success Messages -->
+                <div id="auth-error" class="auth-message" style="display: none;"></div>
                 
-                <div class="auth-form">
-                    <div class="form-group">
-                        <label for="email">Email</label>
-                        <input type="email" id="auth-email" placeholder="Enter your email" class="ms-TextField-field">
-                    </div>
-                    <div class="form-group">
-                        <label for="password">Password</label>
-                        <input type="password" id="auth-password" placeholder="Enter your password" class="ms-TextField-field">
-                    </div>
-                    <div class="form-actions">
-                        <button id="login-button" class="ms-Button ms-Button--primary">
-                            <span class="ms-Button-label">Sign In</span>
-                        </button>
-                        <div id="login-loading" class="loading-spinner">
-                            <div class="spinner"></div>
+                <!-- Login View -->
+                <div id="login-view" class="auth-view">
+                    <h2 class="ms-font-xl">Sign In</h2>
+                    <p class="ms-font-m">Please log in to use the Opsie Email Assistant</p>
+                    
+                    <div class="auth-form">
+                        <div class="form-group">
+                            <label for="auth-email">Email</label>
+                            <input type="email" id="auth-email" placeholder="Enter your email" class="ms-TextField-field">
+                        </div>
+                        <div class="form-group">
+                            <label for="auth-password">Password</label>
+                            <input type="password" id="auth-password" placeholder="Enter your password" class="ms-TextField-field">
+                        </div>
+                        <div class="form-actions">
+                            <button id="login-button" class="ms-Button ms-Button--primary">
+                                <span class="ms-Button-label">Sign In</span>
+                            </button>
+                            <div id="login-loading" class="loading-spinner">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                        <div class="auth-links">
+                            <a href="#" id="forgot-password-link">Forgot password?</a>
+                            <a href="#" id="show-signup-link">Create account</a>
                         </div>
                     </div>
-                    <div class="auth-links">
-                        <a href="https://opsie.io/forgot-password" target="_blank">Forgot password?</a>
-                        <a href="https://opsie.io/signup" target="_blank">Create account</a>
+                </div>
+
+                <!-- Signup View -->
+                <div id="signup-view" class="auth-view" style="display: none;">
+                    <h2 class="ms-font-xl">Create Account</h2>
+                    <p class="ms-font-m">Join Opsie to get started with your email assistant</p>
+                    
+                    <div class="auth-form">
+                        <div class="form-group">
+                            <label for="signup-first-name">First Name</label>
+                            <input type="text" id="signup-first-name" placeholder="Enter your first name" class="ms-TextField-field">
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-last-name">Last Name</label>
+                            <input type="text" id="signup-last-name" placeholder="Enter your last name" class="ms-TextField-field">
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-email">Email</label>
+                            <input type="email" id="signup-email" placeholder="Enter your email" class="ms-TextField-field">
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-password">Password</label>
+                            <input type="password" id="signup-password" placeholder="Enter your password" class="ms-TextField-field">
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-confirm-password">Confirm Password</label>
+                            <input type="password" id="signup-confirm-password" placeholder="Confirm your password" class="ms-TextField-field">
+                        </div>
+                        <div class="form-actions">
+                            <button id="signup-button" class="ms-Button ms-Button--primary">
+                                <span class="ms-Button-label">Create Account</span>
+                            </button>
+                            <div id="signup-loading" class="loading-spinner">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                        <div class="auth-links">
+                            <a href="#" id="show-login-link">Already have an account? Sign in</a>
+                        </div>
                     </div>
                 </div>
+
+                <!-- Password Reset View -->
+                <div id="password-reset-view" class="auth-view" style="display: none;">
+                    <h2 class="ms-font-xl">Reset Password</h2>
+                    <p class="ms-font-m">Enter your email to receive password reset instructions</p>
+                    
+                    <div class="auth-form">
+                        <div class="form-group">
+                            <label for="reset-email">Email</label>
+                            <input type="email" id="reset-email" placeholder="Enter your email" class="ms-TextField-field">
+                        </div>
+                        <div class="form-actions">
+                            <button id="reset-password-button" class="ms-Button ms-Button--primary">
+                                <span class="ms-Button-label">Send Reset Link</span>
+                            </button>
+                            <div id="reset-loading" class="loading-spinner">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                        <div class="auth-links">
+                            <a href="#" id="back-to-login-link">Back to sign in</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Team Selection View (Full Screen Overlay) -->
+        <div id="team-select-view" class="auth-view" style="display: none;">
+            <h2 class="ms-font-xl">Team Setup</h2>
+            <p class="ms-font-m">Welcome! You need to join or create a team to get started.</p>
+            
+            <!-- Auth Messages -->
+            <div id="team-auth-error" class="auth-message error" style="display: none;"></div>
+            <div id="team-auth-success" class="auth-message success" style="display: none;"></div>
+            
+            <!-- Pending Join Request Status -->
+            <div id="pending-request-status" class="pending-request-status" style="display: none;">
+                <div class="pending-request-card">
+                    <div class="pending-request-header">
+                        <h3>Join Request Status</h3>
+                        <span id="request-status-badge" class="status-badge status-pending">Pending</span>
+                    </div>
+                    <div class="pending-request-body">
+                        <p>Your request to join <strong id="requested-team-name">Team</strong> was sent on <span id="request-date">--</span>.</p>
+                        <p class="status-description">Waiting for team admin approval...</p>
+                    </div>
+                    <div class="pending-request-actions">
+                        <button id="refresh-request-status-btn" class="ms-Button ms-Button--primary">
+                            <span class="ms-Button-label">Refresh Status</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="team-options">
+                <!-- Join Team Section -->
+                <div class="team-option">
+                    <h3>Join Existing Team</h3>
+                    <p>Enter your team's access code to join:</p>
+                    <div class="form-group">
+                        <label for="join-team-code">Team Access Code</label>
+                        <input type="text" id="join-team-code" placeholder="Enter access code" class="ms-TextField-field" style="text-transform: uppercase;">
+                    </div>
+                    <button id="join-team-btn" class="ms-Button ms-Button--primary">
+                        <span class="ms-Button-label">Join Team</span>
+                    </button>
+                </div>
+
+                <div class="team-divider">OR</div>
+
+                <!-- Create Team Section -->
+                <div class="team-option">
+                    <h3>Create New Team</h3>
+                    <p>Set up a new team for your organization:</p>
+                    <div class="form-group">
+                        <label for="create-team-name">Team Name *</label>
+                        <input type="text" id="create-team-name" placeholder="Enter team name" class="ms-TextField-field" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="create-team-organization">Organization</label>
+                        <input type="text" id="create-team-organization" placeholder="Enter organization name" class="ms-TextField-field">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="create-team-invoice-email">Invoice Email</label>
+                        <input type="email" id="create-team-invoice-email" placeholder="Enter invoice email address" class="ms-TextField-field">
+                        <small style="color: #666; display: block; margin-top: 5px;">Where billing information will be sent</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Billing Address</label>
+                        <input type="text" id="create-team-billing-street" placeholder="Street address" class="ms-TextField-field" style="margin-bottom: 8px;">
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <input type="text" id="create-team-billing-city" placeholder="City" class="ms-TextField-field" style="flex: 1;">
+                            <input type="text" id="create-team-billing-region" placeholder="State/Province/Region" class="ms-TextField-field" style="flex: 1;">
+                        </div>
+                        <input type="text" id="create-team-billing-country" placeholder="Country" class="ms-TextField-field">
+                    </div>
+                    
+                    <button id="create-team-btn" class="ms-Button ms-Button--primary">
+                        <span class="ms-Button-label">Create Team</span>
+                    </button>
+                </div>
+            </div>
+
+
+
+            <!-- Team Loading -->
+            <div id="team-loading" class="loading-spinner" style="display: none;">
+                <div class="spinner"></div>
+                <p>Processing team request...</p>
+            </div>
+            
+            <!-- Sign Out Button at Bottom -->
+            <div style="margin-top: 40px; text-align: center; border-top: 1px solid #e9ecef; padding-top: 20px;">
+                <button id="team-signout-btn" class="ms-Button" style="background: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">
+                    <span class="ms-Button-label">Sign Out</span>
+                </button>
             </div>
         </div>
 
@@ -126,7 +296,7 @@
                     <div id="handling-note-display" class="handling-note" style="display: none;"></div>
                 </div>
                 
-                <!-- Add Debug Buttons -->
+                <!-- Add Debug Buttons
                 <div style="margin-top: 20px; padding: 10px; background-color: #ffe6e6; border: 1px solid #ff9999;">
                     <h3 style="color: #cc0000;">Debug Actions</h3>
                     <div style="display: flex; gap: 10px; margin-top: 10px;">
@@ -157,7 +327,7 @@
                             Get User Info
                         </button>
                     </div>
-                </div>
+                </div> -->
             </div>
             
             <!-- Notes Section -->
@@ -170,23 +340,23 @@
                 <!-- Notes Form -->
                 <div id="notes-form-container" style="display: none;">
                     <textarea id="note-body" placeholder="Add your note here..."></textarea>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                    <div class="note-form-actions">
                         <select id="note-category">
                             <option value="Action Required">Action Required</option>
                             <option value="Pending">Pending</option>
                             <option value="Information">Information</option>
                             <option value="Other">Other</option>
                         </select>
-                        <button id="add-note-button" class="action-button" onclick="window.directAddNote(document.getElementById('note-body').value.trim(), document.getElementById('note-category').value); return false;">Add Note</button>
+                        <button id="add-note-button" onclick="window.directAddNote(document.getElementById('note-body').value.trim(), document.getElementById('note-category').value); return false;">Add Note</button>
                     </div>
                 </div>
                 
-                <!-- Add emergency test buttons with direct inline onclick attributes -->
+                <!-- Add emergency test buttons with direct inline onclick attributes 
                 <div style="margin-top: 15px; margin-bottom: 15px;">
                     <button class="action-button" style="background-color: #ff5722;" onclick="window.addTestNoteGlobal(); return false;">
                         Add Test Note (Global)
                     </button>
-                </div>
+                </div> -->
                 
                 <!-- Notes List Container -->
                 <div id="notes-container">
@@ -199,10 +369,6 @@
             <!-- Action buttons -->
             <div id="action-buttons" class="section">
                 <h2>Email Actions</h2>
-                <button id="generate-summary-button" class="action-button">Generate AI Summary</button>
-                <button id="generate-contact-button" class="action-button">Get Contact Summaries</button>
-                <button id="extract-qa-button" class="action-button">Extract Questions</button>
-                <button id="generate-reply-button" class="action-button">Generate Reply</button>
                 <button id="save-email-button" class="action-button">Save Email</button>
                 <button id="mark-handled-button" class="action-button" disabled style="background-color: #ff9800;">Mark as Handled</button>
             </div>
@@ -231,10 +397,22 @@
                     <h2>Questions & Answers</h2>
                 </div>
                 
+                <button id="extract-qa-button" class="section-action-button qa-button">Extract Questions</button>
+                
+                <!-- Manual Question Input Section -->
+                <div id="manual-question-section" class="manual-question-section">
+                    <h3>Ask a Question</h3>
+                    <div class="manual-question-input-container">
+                        <textarea id="manual-question-input" placeholder="Type your question here..." rows="3"></textarea>
+                        <button id="submit-manual-question" class="action-button">Get Answer</button>
+                    </div>
+                    <div class="hint-text">Ask any question and we'll search through your team's emails and knowledge base for an answer.</div>
+                </div>
+                
                 <!-- Loading spinner -->
                 <div id="qa-loading-spinner" class="loading-spinner" style="display: none;">
                     <div class="spinner"></div>
-                    <p>Extracting questions and finding answers...</p>
+                    <p>Processing questions and finding answers, this may take a minute...</p>
                 </div>
                 
                 <!-- Message for when no questions are found -->
@@ -245,7 +423,7 @@
                 <!-- List of extracted questions -->
                 <div id="qa-list"></div>
                 
-                <!-- Debug button for testing (hidden by default) -->
+                <!-- Debug button for testing (hidden by default) 
                 <div id="qa-debug-section" style="display: none; margin-top: 20px; padding: 10px; border-top: 1px dashed #ccc;">
                     <h3>Debug Tools</h3>
                     <button id="test-qa-save-button" class="action-button" style="background-color: #6c757d;">
@@ -253,12 +431,13 @@
                     </button>
                     <div id="qa-debug-output" style="margin-top: 10px; font-family: monospace; font-size: 12px; 
                         white-space: pre-wrap; max-height: 200px; overflow-y: auto; background-color: #f8f9fa; padding: 10px;"></div>
-                </div>
+                </div> -->
             </div>
 
             <!-- Summary section -->
             <div id="summary-container" class="section" style="display: none;">
                 <h2>Email Summary</h2>
+                <button id="generate-summary-button" class="section-action-button summary-button">Generate AI Summary</button>
                 <div id="summary-loading" class="loading-spinner" style="display: none;">
                     <div class="spinner"></div>
                 </div>
@@ -280,6 +459,7 @@
             <!-- Contact history section -->
             <div id="contact-container" class="section" style="display: none;">
                 <h2>Contact Information</h2>
+                <button id="generate-contact-button" class="section-action-button contact-button">Get Contact Summaries</button>
                 <div id="contact-loading" class="loading-spinner" style="display: none;">
                     <div class="spinner"></div>
                 </div>
@@ -308,6 +488,8 @@
             <!-- Reply section -->
             <div id="reply-section" class="section">
                 <h2>Generate Email Reply</h2>
+                
+                <!--<button id="generate-reply-button" class="section-action-button reply-button">Generate Reply</button> -->
                 
                 <div class="reply-options">
                     <div class="reply-row">
@@ -340,6 +522,7 @@
                             <option value="es">Spanish</option>
                             <option value="it">Italian</option>
                             <option value="pt">Portuguese</option>
+                            <option value="sv">Swedish</option>
                         </select>
                     </div>
                     
@@ -347,12 +530,12 @@
                     <div class="reply-context-container">
                         <label for="reply-additional-context">Additional Context (optional)</label>
                         <textarea id="reply-additional-context" placeholder="Add any specific details or context for the AI..."></textarea>
-                        <div class="hint-text">Provide context such as specific points to address, your relationship with the recipient, or relevant background information.</div>
+                        <div class="hint-text">Provide context such as specific points to address, your relationship with the recipient, or relevant background information.Information from the Questions & Answers section will be automatically added to the reply.</div>
                     </div>
                 </div>
                 
                 <!-- Add the generate button -->
-                <button id="btn-generate-reply-now" class="action-button">Generate Reply</button>
+                <button id="btn-generate-reply-now" class="section-action-button reply-button">Generate Reply</button>
                 <div id="reply-loading" class="loading-spinner" style="display: none;">
                     <div class="spinner"></div>
                 </div>
@@ -361,7 +544,7 @@
                     <h3>Generated Reply</h3>
                     <div id="reply-preview"></div>
                     <button id="copy-reply-button">Copy to Clipboard</button>
-                    <button id="insert-reply-button">Insert into Email</button>
+                    <!--<button id="insert-reply-button">Insert into Email</button>-->
                 </div>
             </div>
 
@@ -472,6 +655,20 @@
                     
                     <!-- For admins only -->
                     <div id="admin-controls" style="display: none;">
+                        <!-- Document Upload Section -->
+                        <div class="form-group" style="margin-bottom: 20px;">
+                            <h4>Knowledge Base Documents</h4>
+                            <p class="hint-text">Upload documents to automatically generate Q&A pairs for your team's knowledge base.</p>
+                            <div class="document-upload-container">
+                                <input type="file" id="knowledge-doc-input" accept=".pdf,.doc,.docx,.txt" style="display: none;">
+                                <button id="upload-document-button" class="action-button" style="width: 100%; margin-bottom: 10px;">Upload Document</button>
+                                <div id="document-upload-status" style="display: none;">
+                                    <div class="spinner"></div>
+                                    <span>Processing document...</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Transfer admin section -->
                         <div class="form-group">
                             <label for="team-members-select">Transfer Admin Rights:</label>
@@ -527,6 +724,12 @@
 
     <!-- API Service -->
     <script type="text/javascript" src="api-service.js"></script>
+    
+    <!-- Authentication UI -->
+    <script type="text/javascript" src="taskpane/auth-ui.js"></script>
+    
+    <!-- Team Management -->
+    <script type="text/javascript" src="team-management.js"></script>
     
     <!-- Custom JavaScript -->
     <script type="text/javascript" src="taskpane.js"></script>

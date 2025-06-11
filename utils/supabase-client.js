@@ -830,10 +830,16 @@ async function buildMessageResult(messageData, headers) {
     // If we have a user ID for who handled it, get user details
     if (messageData.handled_by) {
       try {
-        // Fetch user details for who handled it
+        // Fetch user details for who handled it using RPC function
         const userResponse = await fetch(
-          `${SUPABASE_URL}/rest/v1/users?id=eq.${messageData.handled_by}&select=first_name,last_name,email`,
-          { method: 'GET', headers: headers }
+          `${SUPABASE_URL}/rest/v1/rpc/get_user_details`,
+          { 
+            method: 'POST', 
+            headers: headers,
+            body: JSON.stringify({
+              user_ids: [messageData.handled_by]
+            })
+          }
         );
         
         if (userResponse.ok) {
@@ -859,12 +865,15 @@ async function buildMessageResult(messageData, headers) {
   // If we have a user ID, get user details
   if (messageData.user_id) {
     try {
-      // Fetch user details to get name
+      // Fetch user details to get name using RPC function
       const userResponse = await fetch(
-        `${SUPABASE_URL}/rest/v1/users?id=eq.${messageData.user_id}&select=first_name,last_name,email`,
+        `${SUPABASE_URL}/rest/v1/rpc/get_user_details`,
         {
-          method: 'GET',
-          headers: headers
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            user_ids: [messageData.user_id]
+          })
         }
       );
       
@@ -908,10 +917,11 @@ export async function addNoteToMessage(messageId, userId, noteBody, category = n
     console.log('Adding note to message:', messageId, 'by user:', userId, 'category:', category);
     
     const { accessToken } = await chrome.storage.sync.get(['accessToken']);
+    const teamId = await getUserTeamId();
     
-    if (!accessToken || !userId || !messageId || !noteBody) {
+    if (!accessToken || !userId || !messageId || !noteBody || !teamId) {
       console.error('Missing required data for adding note to message');
-      return { success: false, error: 'Missing required data (accessToken, userId, messageId, or noteBody)' };
+      return { success: false, error: 'Missing required data (accessToken, userId, messageId, teamId, or noteBody)' };
     }
     
     const headers = {
@@ -928,6 +938,7 @@ export async function addNoteToMessage(messageId, userId, noteBody, category = n
         user_id: userId,
         note_body: noteBody,
         category: category,
+        team_id: teamId,
         created_at: new Date().toISOString()
       })
     });
@@ -978,10 +989,11 @@ export async function getMessageNotes(messageId) {
     console.log('Getting notes for message:', messageId);
     
     const { accessToken } = await chrome.storage.sync.get(['accessToken']);
+    const teamId = await getUserTeamId();
     
-    if (!accessToken || !messageId) {
+    if (!accessToken || !messageId || !teamId) {
       console.error('Missing required data for getting message notes');
-      return { success: false, error: 'Missing required data (accessToken or messageId)' };
+      return { success: false, error: 'Missing required data (accessToken, messageId, or teamId)' };
     }
     
     const headers = {
@@ -990,9 +1002,9 @@ export async function getMessageNotes(messageId) {
       'Authorization': `Bearer ${accessToken}`
     };
     
-    // Get notes for this message, ordered by creation date descending (newest first)
+    // Get notes for this message AND team, ordered by creation date descending (newest first)
     const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/notes?message_id=eq.${messageId}&order=created_at.desc`,
+      `${SUPABASE_URL}/rest/v1/notes?message_id=eq.${messageId}&team_id=eq.${teamId}&order=created_at.desc`,
       {
         method: 'GET',
         headers: headers
@@ -1029,9 +1041,12 @@ export async function getMessageNotes(messageId) {
         // Format as a comma-separated list for the "in" operator
         const userIdList = userIds.map(id => `"${id}"`).join(',');
         
-        const usersResponse = await fetch(`${SUPABASE_URL}/rest/v1/users?id=in.(${userIdList})&select=id,first_name,last_name,email`, {
-          method: 'GET',
-          headers: headers
+        const usersResponse = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_user_details`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            user_ids: userIds
+          })
         });
         
         if (usersResponse.ok) {

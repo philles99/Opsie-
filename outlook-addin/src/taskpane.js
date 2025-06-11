@@ -13,6 +13,11 @@ let currentEmailData = null;
 // Define global variable for current email notes
 let currentEmailNotes = [];
 
+// Global variables for notes polling
+let notesPollingInterval = null;
+let lastNotesCheck = null;
+let isNotesPollingActive = false;
+
 // Function to log messages to both console and local log
 function log(message, type = 'info', data = null) {
     const entry = {
@@ -124,6 +129,11 @@ function showDebugSections() {
 // Call this early and repeatedly until it succeeds
 setInterval(showDebugSections, 500);
 
+// Cleanup function to stop polling when page unloads
+window.addEventListener('beforeunload', function() {
+    stopNotesPolling();
+});
+
 // Wrap Office.onReady in try-catch
 Office.onReady((info) => {
     try {
@@ -214,6 +224,9 @@ Office.onReady((info) => {
     } catch (officeReadyError) {
         displayError(officeReadyError, 'office-ready');
     }
+
+    // Initialize document upload functionality
+    initializeDocumentUpload();
 });
 
 // Catch unhandled rejections
@@ -247,7 +260,8 @@ async function checkAuthStatus() {
         window.OpsieApi.log(`Authentication status: ${isAuthenticated ? 'Authenticated' : 'Not authenticated'}`, 'info', { context: 'auth-check' });
         
         if (isAuthenticated) {
-            // User is authenticated, show main content
+            // User is authenticated, hide auth containers but DON'T show main content yet
+            // Main content will be shown only after team validation in showMainUISections()
             if (authErrorContainer) {
                 authErrorContainer.style.display = 'none';
             } else {
@@ -260,8 +274,9 @@ async function checkAuthStatus() {
                 window.OpsieApi.log('auth-container element not found', 'warning', { context: 'auth-check' });
             }
             
+            // DON'T show main-content yet - wait for team validation
             if (mainContent) {
-                mainContent.style.display = 'block';
+                mainContent.style.display = 'none'; // Keep it hidden until team validation
             } else {
                 window.OpsieApi.log('main-content element not found', 'warning', { context: 'auth-check' });
             }
@@ -334,6 +349,13 @@ async function checkAuthStatus() {
                         
                         if (!teamInitResult.teamId) {
                             window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                        } else {
+                            // User has team, ensure UI sections are visible
+                            window.OpsieApi.log('User has team during auth check, ensuring UI sections are visible', 'info', {
+                                teamId: teamInitResult.teamId,
+                                context: 'auth-check'
+                            });
+                            showMainUISections();
                         }
                     } else {
                         // Old format returned a boolean
@@ -354,6 +376,12 @@ async function checkAuthStatus() {
                         
                         if (!teamInitResult) {
                             window.OpsieApi.showNotification('Warning: Could not initialize team information. Some features may be limited.', 'warning');
+                        } else {
+                            // User has team, ensure UI sections are visible
+                            window.OpsieApi.log('User has team during auth check (legacy), ensuring UI sections are visible', 'info', {
+                                context: 'auth-check'
+                            });
+                            showMainUISections();
                         }
                     }
                 } catch (teamInitError) {
@@ -523,6 +551,98 @@ function setupEventListeners() {
             loginButton.addEventListener('click', handleLogin);
         }
         
+        // Authentication view switching
+        const showSignupLink = document.getElementById('show-signup-link');
+        if (showSignupLink) {
+            showSignupLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showSignupView();
+            });
+        }
+        
+        const showLoginLink = document.getElementById('show-login-link');
+        if (showLoginLink) {
+            showLoginLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showLoginView();
+            });
+        }
+        
+        const forgotPasswordLink = document.getElementById('forgot-password-link');
+        if (forgotPasswordLink) {
+            forgotPasswordLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showPasswordResetView();
+            });
+        }
+        
+        const backToLoginLink = document.getElementById('back-to-login-link');
+        if (backToLoginLink) {
+            backToLoginLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showLoginView();
+            });
+        }
+        
+        // Signup button
+        const signupButton = document.getElementById('signup-button');
+        if (signupButton) {
+            signupButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                handleSignup();
+            });
+        }
+        
+        // Password reset button
+        const resetPasswordButton = document.getElementById('reset-password-button');
+        if (resetPasswordButton) {
+            resetPasswordButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                handlePasswordReset();
+            });
+        }
+        
+        // Keyboard event listeners for signup form
+        const signupInputs = [
+            'signup-first-name',
+            'signup-last-name', 
+            'signup-email',
+            'signup-password',
+            'signup-confirm-password'
+        ];
+        
+        signupInputs.forEach((inputId, index) => {
+            const input = document.getElementById(inputId);
+            if (input) {
+                input.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (index < signupInputs.length - 1) {
+                            // Move to next input
+                            const nextInput = document.getElementById(signupInputs[index + 1]);
+                            if (nextInput) {
+                                nextInput.focus();
+                            }
+                        } else {
+                            // Last input, submit form
+                            handleSignup();
+                        }
+                    }
+                });
+            }
+        });
+        
+        // Keyboard event listener for password reset form
+        const resetEmailInput = document.getElementById('reset-email');
+        if (resetEmailInput) {
+            resetEmailInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handlePasswordReset();
+                }
+            });
+        }
+        
         // Add keyboard event listeners for the login form
         const authEmailInput = document.getElementById('auth-email');
         const authPasswordInput = document.getElementById('auth-password');
@@ -583,6 +703,24 @@ function setupEventListeners() {
         
         // Load saved API key
         loadApiKey();
+        
+        // Manual Question Submission button
+        const submitManualQuestionButton = document.getElementById('submit-manual-question');
+        if (submitManualQuestionButton) {
+            submitManualQuestionButton.addEventListener('click', handleManualQuestionSubmission);
+        }
+        
+        // Add keyboard event listener for manual question input (Enter to submit)
+        const manualQuestionInput = document.getElementById('manual-question-input');
+        if (manualQuestionInput) {
+            manualQuestionInput.addEventListener('keydown', function(e) {
+                // Submit on Ctrl+Enter or Cmd+Enter
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    handleManualQuestionSubmission();
+                    e.preventDefault();
+                }
+            });
+        }
         
         log('Event listeners set up successfully');
     } catch (error) {
@@ -792,14 +930,12 @@ async function handleLogin() {
             authContainer.style.display = 'none';
         }
         
-        // Update UI to show the main content
+        // Don't show main content immediately - wait for team validation
+        // The main content will be shown by showMainUISections() after team validation
         const mainContent = document.getElementById('main-content');
         if (mainContent) {
-            mainContent.style.display = 'block';
+            mainContent.style.display = 'none'; // Keep hidden until team validation
         }
-        
-        // Make sure all main UI sections are visible
-        showMainUISections();
         
         // Make sure to reload user settings information to update the UI with new user info
         // Force a refresh to ensure we're not using cached data
@@ -810,9 +946,49 @@ async function handleLogin() {
             log('Error refreshing user settings after login', 'error', settingsError);
         }
         
+        // Clear any cached team data to ensure fresh data after login
+        localStorage.removeItem('currentTeamId');
+        localStorage.removeItem('currentTeamName');
+        
         // Initialize team and user info with a callback that will reload the email data once team info is ready
         window.OpsieApi.initTeamAndUserInfo(function(teamInfo) {
             log('Team info initialized within login callback', 'info', teamInfo);
+            
+            // Check if user has a team
+            if (!teamInfo.teamId) {
+                log('User does not have a team, showing team selection view', 'info');
+                
+                // Hide main content and show team selection
+                const mainContent = document.getElementById('main-content');
+                if (mainContent) {
+                    mainContent.style.display = 'none';
+                }
+                
+                // Show team selection view
+                if (typeof window.showTeamSelectView === 'function') {
+                    window.showTeamSelectView();
+                } else {
+                    log('showTeamSelectView function not available', 'error');
+                    showErrorNotification('Team selection not available. Please refresh the page.');
+                }
+                return;
+            }
+            
+            // User has a team, proceed with normal flow
+            log('User has team, proceeding with normal login flow', 'info', { teamId: teamInfo.teamId });
+            
+            // Hide team selection view and ensure main content will be shown when ready
+            if (typeof window.hideAuthContainer === 'function') {
+                window.hideAuthContainer();
+                log('Hidden team selection view - user has team', 'info');
+            }
+            
+            // Show the settings button since user has a team
+            const settingsButton = document.getElementById('settings-button');
+            if (settingsButton) {
+                settingsButton.style.display = 'block';
+                log('Shown settings button - user has team', 'info');
+            }
             
             // Only try to reload email data if we have an active mailbox context and a team ID
             if (Office.context.mailbox && teamInfo.teamId) {
@@ -856,6 +1032,9 @@ function loadCurrentEmail() {
         showErrorNotification('No email is selected');
         return;
     }
+    
+    // Stop any existing notes polling when loading a new email
+    stopNotesPolling();
     
     // Reset email data
     currentEmailData = null;
@@ -1216,14 +1395,17 @@ async function checkIfEmailExists(messageId, emailData) {
                     
                     if (closestMessage.user_id) {
                         try {
-                            // Fetch user details from the users table
-                            const userResponse = await fetch(`${apiBase}/users?id=eq.${closestMessage.user_id}&select=first_name,last_name,email`, {
-                                method: 'GET',
+                            // Fetch user details using RPC function to bypass RLS
+                            const userResponse = await fetch(`${apiBase}/rpc/get_user_details`, {
+                                method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json',
                                     'apikey': window.OpsieApi.SUPABASE_KEY,
                                     'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
-                                }
+                                },
+                                body: JSON.stringify({
+                                    user_ids: [closestMessage.user_id]
+                                })
                             });
                             
                             if (userResponse.ok) {
@@ -1964,6 +2146,17 @@ async function extractMessageId(item) {
 }
 
 // Add this function to better handle errors
+// Helper function to check if user has a team
+function checkTeamMembership() {
+    const teamId = localStorage.getItem('currentTeamId');
+    if (!teamId) {
+        log('Team membership check failed - no team ID found', 'warning');
+        showErrorNotification('You need to be assigned to a team to use this feature. Please contact your administrator.');
+        return false;
+    }
+    return true;
+}
+
 function handleApiError(error, context) {
     console.error(`Error during ${context}:`, error);
     
@@ -1983,6 +2176,11 @@ function handleApiError(error, context) {
 // Handle generating summary
 async function handleGenerateSummary() {
     try {
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Check if email data is available
         if (!currentEmailData || !currentEmailData.body) {
             showErrorNotification('No email data available to summarize');
@@ -2177,6 +2375,11 @@ async function handleGenerateSummary() {
 // Handle getting contact summary
 async function handleGetContact() {
     try {
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Check if email data is available
         if (!currentEmailData || !currentEmailData.sender || !currentEmailData.sender.email) {
             showErrorNotification('No contact information available');
@@ -2245,6 +2448,11 @@ async function handleGetContact() {
  */
 async function handleSearch() {
     try {
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Get the search query
         const searchInput = document.getElementById('email-search-input');
         const query = searchInput.value.trim();
@@ -2378,6 +2586,11 @@ async function handleSearch() {
 // Handle generating reply
 async function handleGenerateReply() {
     try {
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Check if email data is available
         if (!currentEmailData || !currentEmailData.body) {
             showErrorNotification('No email data available to generate reply');
@@ -2392,7 +2605,65 @@ async function handleGenerateReply() {
             additionalContext: document.getElementById('reply-additional-context').value.trim()
         };
         
-        log(`Generating reply with options: ${JSON.stringify(options)}`);
+        // Check if we have Q&A data to include as context
+        let qaContext = '';
+        if (window.OpsieApi.extractQuestionsAndAnswers && 
+            window.OpsieApi.extractQuestionsAndAnswers.questions && 
+            window.OpsieApi.extractQuestionsAndAnswers.questions.length > 0) {
+            
+            const questions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+            log('Found Q&A data to include in reply context', 'info', { questionCount: questions.length });
+            
+            // Format Q&A data for the AI
+            const qaItems = questions
+                .filter(q => q.answer) // Only include questions that have answers
+                .map((q, index) => {
+                    let qaItem = `Q${index + 1}: ${q.text}\nA${index + 1}: ${q.answer}`;
+                    
+                    // Add source information if available
+                    if (q.source === 'database' && q.matchType) {
+                        if (q.matchType === 'semantic' && q.similarityScore) {
+                            qaItem += ` (${Math.round(q.similarityScore * 100)}% match from knowledge base)`;
+                        } else if (q.matchType === 'exact') {
+                            qaItem += ` (exact match from knowledge base)`;
+                        } else if (q.matchType === 'fuzzy') {
+                            qaItem += ` (keyword match from knowledge base)`;
+                        }
+                    } else if (q.source === 'search') {
+                        qaItem += ` (found in team emails)`;
+                    }
+                    
+                    // Add verification status
+                    if (q.verified || q.isVerified) {
+                        qaItem += ` [Verified]`;
+                    }
+                    
+                    return qaItem;
+                })
+                .slice(0, 5); // Limit to 5 most relevant Q&As to avoid overwhelming the AI
+            
+            if (qaItems.length > 0) {
+                qaContext = `\n\nRelevant Questions & Answers from this email analysis:\n${qaItems.join('\n\n')}`;
+                log('Generated Q&A context for reply', 'info', { 
+                    contextLength: qaContext.length, 
+                    qaCount: qaItems.length 
+                });
+            }
+        }
+        
+        // Combine additional context with Q&A context
+        if (qaContext) {
+            if (options.additionalContext) {
+                options.additionalContext += qaContext;
+            } else {
+                options.additionalContext = qaContext.trim();
+            }
+            log('Enhanced reply context with Q&A data', 'info', { 
+                totalContextLength: options.additionalContext.length 
+            });
+        }
+        
+        log(`Generating reply with options: ${JSON.stringify({...options, additionalContext: options.additionalContext ? `${options.additionalContext.substring(0, 100)}...` : ''})}`);
         
         // Call the API to generate the reply
         const replyResult = await window.OpsieApi.generateReplySuggestion(currentEmailData, options);
@@ -2414,8 +2685,13 @@ async function handleGenerateReply() {
             replyContainer.scrollIntoView({ behavior: 'smooth' });
         }
         
-        // Show success notification
-        showNotification('Reply generated successfully!', 'success');
+        // Show success notification with context info
+        let successMessage = 'Reply generated successfully!';
+        if (qaContext) {
+            const qaCount = window.OpsieApi.extractQuestionsAndAnswers.questions.filter(q => q.answer).length;
+            successMessage += ` (Enhanced with ${qaCount} Q&A context${qaCount > 1 ? 's' : ''})`;
+        }
+        showNotification(successMessage, 'success');
     } catch (error) {
         handleApiError(error, 'generating reply');
     }
@@ -2424,6 +2700,11 @@ async function handleGenerateReply() {
 // Handle saving email
 async function handleSaveEmail() {
     try {
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Check if email data is available
         if (!currentEmailData || !currentEmailData.body) {
             showErrorNotification('No email data available to save');
@@ -2791,13 +3072,16 @@ async function markEmailAsHandled(note) {
         // Fetch current user details from server to ensure we have accurate information
         let userInfo = null;
         try {
-            const userResponse = await fetch(`${apiBase}/users?id=eq.${userId}&select=first_name,last_name,email`, {
-                method: 'GET',
+            const userResponse = await fetch(`${apiBase}/rpc/get_user_details`, {
+                method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'apikey': window.OpsieApi.SUPABASE_KEY,
                     'Authorization': `Bearer ${localStorage.getItem(window.OpsieApi.STORAGE_KEY_TOKEN)}`
-                }
+                },
+                body: JSON.stringify({
+                    user_ids: [userId]
+                })
             });
             
             if (userResponse.ok) {
@@ -3249,8 +3533,8 @@ async function loadTaskpane() {
         log('Authentication status:', 'info', { authenticated: isAuthenticated });
         
         if (isAuthenticated) {
-            // User is authenticated, hide auth UI and show main content
-            log('User is authenticated, showing main content', 'info');
+            // User is authenticated, hide auth UI
+            log('User is authenticated, checking team membership', 'info');
             const authErrorContainer = document.getElementById('auth-error-container');
             const authContainer = document.getElementById('auth-container');
             const mainContent = document.getElementById('main-content');
@@ -3263,27 +3547,72 @@ async function loadTaskpane() {
                 authContainer.style.display = 'none';
             }
             
-            if (mainContent) {
-                mainContent.style.display = 'block';
-            }
+            // DON'T show main content yet - wait for team check
             
-            // Make sure all main UI sections are visible
-            showMainUISections();
-            
-            // Initialize team and user information
+            // Initialize team and user information and check team membership FIRST
             log('Initializing team and user information', 'info');
             await window.OpsieApi.initTeamAndUserInfo(function(teamInfo) {
                 log('Team info initialized on startup', 'info', teamInfo);
                 
-                // If we have a team ID, load the current email
-                if (teamInfo.teamId) {
-                    log('Team ID available, loading current email', 'info');
-                    loadCurrentEmail();
-                } else {
-                    log('No team ID available, email loading may fail', 'warning');
-                    // Still try to load the email
-                    loadCurrentEmail();
+                // Check if user has a team
+                if (!teamInfo || !teamInfo.teamId) {
+                    log('User does not have a team, showing team selection view', 'info');
+                    
+                    // Ensure main content is hidden
+                    if (mainContent) {
+                        mainContent.style.display = 'none';
+                        log('Hidden main content for team selection', 'info');
+                    }
+                    
+                    // Hide all other containers that might interfere
+                    if (authContainer) {
+                        authContainer.style.display = 'none';
+                        log('Hidden auth container for team selection', 'info');
+                    }
+                    
+                    // Show team selection view
+                    if (typeof window.showTeamSelectView === 'function') {
+                        log('Calling showTeamSelectView function', 'info');
+                        window.showTeamSelectView();
+                        
+                        // Double-check team selection view is visible
+                        setTimeout(() => {
+                            const teamSelectView = document.getElementById('team-select-view');
+                            if (teamSelectView) {
+                                log('Team selection view visibility check', 'info', {
+                                    display: teamSelectView.style.display,
+                                    visible: teamSelectView.offsetParent !== null
+                                });
+                            } else {
+                                log('Team selection view element not found!', 'error');
+                            }
+                        }, 100);
+                    } else {
+                        log('showTeamSelectView function not available', 'error');
+                        showErrorNotification('Team selection not available. Please refresh the page.');
+                    }
+                    return;
                 }
+                
+                // User has a team, NOW show main content
+                log('User has team, showing main content and loading email', 'info', { teamId: teamInfo.teamId });
+            
+            if (mainContent) {
+                mainContent.style.display = 'block';
+            }
+                
+                // Show the settings button since user has a team
+                const settingsButton = document.getElementById('settings-button');
+                if (settingsButton) {
+                    settingsButton.style.display = 'block';
+                    log('Shown settings button - user has team', 'info');
+                }
+            
+            // Make sure all main UI sections are visible
+            showMainUISections();
+            
+                // Load current email
+                    loadCurrentEmail();
             });
         } else {
             // User is not authenticated, show auth UI
@@ -3508,6 +3837,9 @@ window.loadNotesForCurrentEmail = async function() {
             window.OpsieApi.log('Making notes section visible', 'info');
             document.getElementById('notes-section').style.display = 'block';
             
+            // Start polling for new notes from team members
+            startNotesPolling();
+            
             window.OpsieApi.showNotification(`Loaded ${notes.length} notes successfully`, 'success');
         } else {
             window.OpsieApi.log('Failed to load notes', 'error', result.error);
@@ -3554,12 +3886,24 @@ window.displayNotes = function(notes) {
             
             const noteDate = new Date(note.created_at);
             const formattedDate = noteDate.toLocaleDateString() + ' ' + noteDate.toLocaleTimeString();
-            const categoryClass = note.category ? note.category.split(' ')[0] : '';
+            // Map category to proper CSS class
+            const category = note.category || 'Other';
+            let categoryClass = 'Other';
+
+            if (category === 'Action Required') {
+                categoryClass = 'Action';
+            } else if (category === 'Pending') {
+                categoryClass = 'Pending';
+            } else if (category === 'Information') {
+                categoryClass = 'Information';
+            } else {
+                categoryClass = 'Other';
+            }
             
             try {
                 const noteHtml = `
-                    <div class="note-item">
-                        <div class="note-category ${categoryClass}">${note.category || 'Note'}</div>
+                    <div class="note-item new-note" data-category="${category}">
+                        <div class="note-category ${categoryClass}">${category}</div>
                         <div class="note-text">${window.escapeHtml(note.note_body || note.body || '')}</div>
                         <div class="note-meta">
                             <span class="note-author">${window.escapeHtml(note.user?.name || 'Unknown User')}</span>
@@ -3636,7 +3980,7 @@ window.addTestNoteGlobal = async function() {
                 internalId: messageId,
                 foundBy: currentEmailData.existingMessage.foundBy || 'unknown'
             });
-        } else {
+            } else {
             // Fall back to external ID if needed
             messageId = currentEmailData.messageId;
             window.OpsieApi.log('Using external message ID for adding note (fallback)', 'info', { 
@@ -3648,9 +3992,9 @@ window.addTestNoteGlobal = async function() {
             window.OpsieApi.log('No message ID available for adding note', 'error');
             window.OpsieApi.showNotification('Cannot add note: Message ID not found', 'error');
             return;
-        }
-        
-        try {
+            }
+            
+            try {
             // Get the user ID using our utility function
             const userId = await window.getUserId();
             
@@ -3793,7 +4137,7 @@ window.directAddNote = async function(noteBody, category) {
                 // Toggle the form back to hidden
                 window.toggleNotesForm();
                 
-                // Reload notes to show the new one
+                // Reload notes to show the new one (this will also restart polling)
                 await window.loadNotesForCurrentEmail();
             } else {
                 window.OpsieApi.showNotification('Failed to add note: ' + (result.error || 'Unknown error'), 'error');
@@ -3807,6 +4151,244 @@ window.directAddNote = async function(noteBody, category) {
         window.OpsieApi.showNotification('Error adding note: ' + error.message, 'error');
     }
 };
+
+/**
+ * Start polling for new notes from other team members
+ */
+function startNotesPolling() {
+    log('Starting notes polling', 'info');
+    
+    // Don't start polling if already active
+    if (isNotesPollingActive) {
+        log('Notes polling already active, skipping', 'info');
+        return;
+    }
+    
+    // Don't start polling if no email is loaded or saved
+    if (!currentEmailData || !currentEmailData.existingMessage || !currentEmailData.existingMessage.exists) {
+        log('Cannot start notes polling - no saved email loaded', 'info');
+        return;
+    }
+    
+    isNotesPollingActive = true;
+    lastNotesCheck = new Date();
+    
+    // Poll every 10 seconds for new notes
+    notesPollingInterval = setInterval(async () => {
+        await pollForNewNotes();
+    }, 10000);
+    
+    log('Notes polling started - checking every 10 seconds', 'info');
+}
+
+/**
+ * Stop notes polling
+ */
+function stopNotesPolling() {
+    log('Stopping notes polling', 'info');
+    
+    if (notesPollingInterval) {
+        clearInterval(notesPollingInterval);
+        notesPollingInterval = null;
+    }
+    
+    isNotesPollingActive = false;
+    log('Notes polling stopped', 'info');
+}
+
+/**
+ * Poll for new notes and update UI if changes detected
+ */
+async function pollForNewNotes() {
+    try {
+        // Don't poll if no email is loaded
+        if (!currentEmailData || !currentEmailData.existingMessage || !currentEmailData.existingMessage.exists) {
+            log('Stopping notes polling - no saved email loaded', 'info');
+            stopNotesPolling();
+            return;
+        }
+        
+        // Get the message ID
+        let messageId = null;
+        if (currentEmailData.existingMessage.message && currentEmailData.existingMessage.message.id) {
+            messageId = currentEmailData.existingMessage.message.id;
+        } else {
+            messageId = currentEmailData.messageId;
+        }
+        
+        if (!messageId) {
+            log('Cannot poll for notes - no message ID available', 'warning');
+            return;
+        }
+        
+        log('Polling for new notes', 'info', { messageId });
+        
+        // Fetch latest notes from API
+        const result = await window.OpsieApi.getMessageNotes(messageId);
+        
+        if (!result.success) {
+            log('Failed to poll for notes', 'error', result.error);
+            return;
+        }
+        
+        const latestNotes = result.notes || [];
+        
+        // Compare with current notes to detect changes
+        const hasChanges = detectNotesChanges(currentEmailNotes, latestNotes);
+        
+        if (hasChanges) {
+            log(`Detected notes changes - current: ${currentEmailNotes.length}, latest: ${latestNotes.length}`, 'info');
+            
+            // Show notification about new notes
+            const newNotesCount = latestNotes.length - currentEmailNotes.length;
+            if (newNotesCount > 0) {
+                window.OpsieApi.showNotification(
+                    `${newNotesCount} new note${newNotesCount === 1 ? '' : 's'} from team members`, 
+                    'info'
+                );
+            }
+            
+            // Update the UI with new notes (highlight new ones) - pass old notes for comparison
+            displayNotesWithNewIndicator(latestNotes, currentEmailNotes);
+            
+            // Update the stored notes after displaying
+            currentEmailNotes = latestNotes;
+        } else {
+            log('No new notes detected during polling', 'info');
+        }
+        
+    } catch (error) {
+        log('Error polling for notes', 'error', error);
+    }
+}
+
+/**
+ * Detect if there are changes in notes (new notes added)
+ */
+function detectNotesChanges(oldNotes, newNotes) {
+    if (!oldNotes || !newNotes) {
+        return newNotes && newNotes.length > 0;
+    }
+    
+    // Check if count changed
+    if (oldNotes.length !== newNotes.length) {
+        return true;
+    }
+    
+    // Check if any note IDs are different (new notes added)
+    const oldNoteIds = new Set(oldNotes.map(note => note.id));
+    const newNoteIds = new Set(newNotes.map(note => note.id));
+    
+    // Check if there are new note IDs
+    for (const id of newNoteIds) {
+        if (!oldNoteIds.has(id)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Display notes with indicators for new notes
+ */
+function displayNotesWithNewIndicator(notes, oldNotes = null) {
+    log('Displaying notes with new indicators', 'info', { notesCount: notes ? notes.length : 0 });
+    
+    try {
+        const notesContainer = document.getElementById('notes-container');
+        
+        if (!notesContainer) {
+            log('Notes container element not found', 'error');
+            return;
+        }
+        
+        if (!notes || notes.length === 0) {
+            log('No notes to display, showing empty state message', 'info');
+            notesContainer.innerHTML = `
+                <div class="no-notes-message">
+                    No notes for this email yet. Click "Add Note" to create the first note.
+                </div>
+            `;
+            return;
+        }
+        
+        log('Building HTML for notes with new indicators', 'info');
+        let notesHtml = '';
+        
+        // Get the set of old note IDs to identify new notes
+        const oldNoteIds = new Set((oldNotes || []).map(note => note.id));
+        
+        for (let i = 0; i < notes.length; i++) {
+            const note = notes[i];
+            const isNewNote = !oldNoteIds.has(note.id);
+            
+            const noteDate = new Date(note.created_at);
+            const formattedDate = noteDate.toLocaleDateString() + ' ' + noteDate.toLocaleTimeString();
+            
+            // Map category to proper CSS class
+            const category = note.category || 'Other';
+            let categoryClass = 'Other';
+
+            if (category === 'Action Required') {
+                categoryClass = 'Action';
+            } else if (category === 'Pending') {
+                categoryClass = 'Pending';
+            } else if (category === 'Information') {
+                categoryClass = 'Information';
+            } else {
+                categoryClass = 'Other';
+            }
+            
+            try {
+                const noteHtml = `
+                    <div class="note-item ${isNewNote ? 'new-note-highlight' : ''}" data-category="${category}" data-note-id="${note.id}">
+                        ${isNewNote ? '<div class="new-note-badge">NEW</div>' : ''}
+                        <div class="note-category ${categoryClass}">${category}</div>
+                        <div class="note-text">${window.escapeHtml(note.note_body || note.body || '')}</div>
+                        <div class="note-meta">
+                            <span class="note-author">${window.escapeHtml(note.user?.name || 'Unknown User')}</span>
+                            <span class="note-date">${formattedDate}</span>
+                        </div>
+                    </div>
+                `;
+                notesHtml += noteHtml;
+                
+                log('Added HTML for note', 'info', { 
+                    noteIndex: i, 
+                    category: note.category,
+                    isNew: isNewNote
+                });
+            } catch (error) {
+                log('Error generating HTML for note', 'error', { 
+                    noteIndex: i, 
+                    note, 
+                    error 
+                });
+            }
+        }
+        
+        log('Setting HTML for notes container with new indicators', 'info');
+        notesContainer.innerHTML = notesHtml;
+        
+        // Remove new note highlights after 10 seconds
+        setTimeout(() => {
+            const newNoteElements = notesContainer.querySelectorAll('.new-note-highlight');
+            newNoteElements.forEach(element => {
+                element.classList.remove('new-note-highlight');
+                const badge = element.querySelector('.new-note-badge');
+                if (badge) {
+                    badge.remove();
+                }
+            });
+        }, 10000);
+        
+        log('Finished displaying notes with new indicators', 'info');
+    } catch (error) {
+        log('Error in displayNotesWithNewIndicator', 'error', error);
+        window.OpsieApi.showNotification('Error displaying notes: ' + error.message, 'error');
+    }
+}
     
 /**
  * Global utility function to get the current user ID
@@ -3971,7 +4553,51 @@ function startAuthCheck() {
 }
 
 // Show settings panel with team management
-function showSettings() {
+async function showSettings() {
+    const settingsContainer = document.getElementById('settings-container');
+    
+    // Check if user has a team before allowing access to settings
+    const teamId = localStorage.getItem('currentTeamId');
+    if (!teamId) {
+        log('User attempted to access settings without a team', 'warning');
+        showErrorNotification('You must be part of a team to access settings');
+        
+        // Show team selection view instead
+        if (typeof window.showTeamSelectView === 'function') {
+            window.showTeamSelectView();
+        }
+        return;
+    }
+    
+    // If settings is already visible, close it
+    if (settingsContainer && settingsContainer.style.display === 'block') {
+        log('Closing settings panel via settings button', 'info');
+        
+        // Hide the settings container
+        settingsContainer.style.display = 'none';
+        
+        // Restore saved display states
+        try {
+            const savedDisplayStates = JSON.parse(localStorage.getItem('sectionDisplayStates') || '{}');
+            for (const [id, displayState] of Object.entries(savedDisplayStates)) {
+                if (id === 'settings-container') continue;
+                
+                const element = document.getElementById(id);
+                if (element) {
+                    element.style.display = displayState;
+                    log(`Restored saved display state for ${id}: ${displayState}`, 'info');
+                }
+            }
+        } catch (error) {
+            log('Error restoring saved display states: ' + error.message, 'error');
+        }
+        
+        // Show all main UI sections
+        showMainUISections();
+        return;
+    }
+    
+    // If not visible, show settings
     log('Opening settings panel', 'info');
     
     // Hide all sections first
@@ -3981,7 +4607,6 @@ function showSettings() {
     loadUserSettingsInfo(true);
     
     // Show settings container
-    const settingsContainer = document.getElementById('settings-container');
     if (settingsContainer) {
         settingsContainer.style.display = 'block';
     }
@@ -4193,6 +4818,34 @@ async function loadTeamMembers(teamId, forceRefresh = false) {
                 });
             });
             
+            // Also populate the team members dropdown for admin transfer
+            const teamMembersSelect = document.getElementById('team-members-select');
+            if (teamMembersSelect && userData.role === 'admin') {
+                // Clear existing options
+                teamMembersSelect.innerHTML = '<option value="">Select a team member...</option>';
+                
+                // Add team members to the dropdown (exclude current user and other admins)
+                sortedMembers.forEach(member => {
+                    // Only add non-admin members (excluding current user)
+                    if (member.id !== currentUserId && member.role !== 'admin') {
+                        const option = document.createElement('option');
+                        option.value = member.id;
+                        
+                        // Format name (either first+last name or just email if no name)
+                        const memberName = `${member.first_name || ''} ${member.last_name || ''}`.trim();
+                        const displayName = memberName || member.email;
+                        
+                        option.textContent = `${displayName} (${member.email})`;
+                        teamMembersSelect.appendChild(option);
+                    }
+                });
+                
+                log('Populated team members dropdown', 'info', { 
+                    totalMembers: sortedMembers.length,
+                    eligibleForTransfer: sortedMembers.filter(m => m.id !== currentUserId && m.role !== 'admin').length
+                });
+            }
+            
         } else {
             log('Failed to load team members', 'error', membersResult.error);
         }
@@ -4204,9 +4857,10 @@ async function loadTeamMembers(teamId, forceRefresh = false) {
 // Load pending join requests for admins
 async function loadPendingRequests(teamId) {
     try {
+        log('=== LOAD PENDING REQUESTS CALLED ===', 'info', { teamId });
         log('Loading pending join requests', 'info', { teamId });
         
-        const requestsResult = await window.OpsieApi.getPendingJoinRequests(teamId);
+        const requestsResult = await window.OpsieApi.getTeamJoinRequests(teamId);
         log('Join requests result', 'info', requestsResult);
         
         if (requestsResult && requestsResult.success) {
@@ -4234,15 +4888,50 @@ async function loadPendingRequests(teamId) {
                         const requestItem = document.createElement('div');
                         requestItem.className = 'request-item';
                         
+                        // Create user name from the correct field names
+                        const userName = `${request.user_first_name || ''} ${request.user_last_name || ''}`.trim() || request.user_email || 'Unknown User';
+                        
+                        // Create the main request info with better styling
                         const requestInfo = document.createElement('div');
-                        requestInfo.textContent = `${request.user_email} has requested to join your team`;
+                        requestInfo.className = 'request-info';
+                        requestInfo.innerHTML = `
+                            <div class="request-user">
+                                <strong>${userName}</strong>
+                                <span class="request-email">(${request.user_email})</span>
+                            </div>
+                            <div class="request-message">has requested to join your team</div>
+                        `;
                         
                         const requestTime = document.createElement('div');
                         requestTime.className = 'request-time';
                         
-                        // Format the created_at timestamp
-                        const created = new Date(request.created_at);
-                        requestTime.textContent = `Requested on ${created.toLocaleDateString()} at ${created.toLocaleTimeString()}`;
+                        // Try different date field names and format properly
+                        let requestDate = null;
+                        const dateValue = request.request_date || request.created_at || request.date_created;
+                        
+                        if (dateValue) {
+                            requestDate = new Date(dateValue);
+                            // Check if date is valid
+                            if (!isNaN(requestDate.getTime())) {
+                                const now = new Date();
+                                const diffTime = Math.abs(now - requestDate);
+                                const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                                
+                                if (diffDays === 0) {
+                                    requestTime.textContent = `Requested today at ${requestDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+                                } else if (diffDays === 1) {
+                                    requestTime.textContent = `Requested yesterday at ${requestDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+                                } else if (diffDays < 7) {
+                                    requestTime.textContent = `Requested ${diffDays} days ago`;
+                                } else {
+                                    requestTime.textContent = `Requested on ${requestDate.toLocaleDateString()}`;
+                                }
+                            } else {
+                                requestTime.textContent = 'Request date unavailable';
+                            }
+                        } else {
+                            requestTime.textContent = 'Request date unavailable';
+                        }
                         
                         const requestActions = document.createElement('div');
                         requestActions.className = 'request-actions';
@@ -4303,8 +4992,8 @@ function setupTeamControls(userRole) {
         
         // For admins, also load pending join requests
         const userInfo = window.OpsieApi.getUserInfo();
-        if (userInfo && userInfo.data && userInfo.data.teamId) {
-            loadPendingRequests(userInfo.data.teamId);
+        if (userInfo && userInfo.team_id) {
+            loadPendingRequests(userInfo.team_id);
         }
     } else {
         // User is a regular member
@@ -4353,10 +5042,72 @@ function hideAllSections() {
     });
 }
 
+// Custom confirmation dialog for Office add-ins (since window.confirm is not supported)
+function showCustomConfirm(message, title = 'Confirm Action', okText = 'OK', cancelText = 'Cancel') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('custom-modal-backdrop');
+        const modalTitle = document.getElementById('custom-modal-title');
+        const modalBody = document.getElementById('custom-modal-body');
+        const modalInput = document.getElementById('custom-modal-input');
+        const okButton = document.getElementById('custom-modal-ok');
+        const cancelButton = document.getElementById('custom-modal-cancel');
+        const closeButton = document.getElementById('custom-modal-close');
+        
+        // Set up the modal
+        modalTitle.textContent = title;
+        modalBody.innerHTML = `<p>${message}</p>`;
+        modalInput.style.display = 'none'; // Hide input for simple confirmations
+        modal.style.display = 'flex';
+        
+        // Clean up any existing event listeners
+        const newOkButton = okButton.cloneNode(true);
+        const newCancelButton = cancelButton.cloneNode(true);
+        const newCloseButton = closeButton.cloneNode(true);
+        okButton.parentNode.replaceChild(newOkButton, okButton);
+        cancelButton.parentNode.replaceChild(newCancelButton, cancelButton);
+        closeButton.parentNode.replaceChild(newCloseButton, closeButton);
+        
+        // Set custom button text
+        newOkButton.textContent = okText;
+        newCancelButton.textContent = cancelText;
+        
+        // Set up event listeners
+        newOkButton.addEventListener('click', () => {
+            modal.style.display = 'none';
+            resolve(true);
+        });
+        
+        newCancelButton.addEventListener('click', () => {
+            modal.style.display = 'none';
+            resolve(false);
+        });
+        
+        newCloseButton.addEventListener('click', () => {
+            modal.style.display = 'none';
+            resolve(false);
+        });
+        
+        // Close on backdrop click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+                resolve(false);
+            }
+        });
+    });
+}
+
 // Handler for removing a team member
 async function handleRemoveTeamMember(memberId, memberEmail) {
     try {
-        if (!confirm(`Are you sure you want to remove ${memberEmail} from the team?`)) {
+        const confirmed = await showCustomConfirm(
+            `Are you sure you want to remove ${memberEmail} from the team?`,
+            'Remove Team Member',
+            'Remove',
+            'Cancel'
+        );
+        
+        if (!confirmed) {
             return;
         }
         
@@ -4370,8 +5121,8 @@ async function handleRemoveTeamMember(memberId, memberEmail) {
             
             // Refresh team members list
             const userInfo = await window.OpsieApi.getUserInfo();
-            if (userInfo && userInfo.data && userInfo.data.teamId) {
-                await loadTeamMembers(userInfo.data.teamId);
+            if (userInfo && userInfo.team_id) {
+                await loadTeamMembers(userInfo.team_id);
             }
         } else {
             log('Failed to remove team member', 'error');
@@ -4395,10 +5146,17 @@ async function handleRequestResponse(requestId, approved) {
             const action = approved ? 'approved' : 'denied';
             showNotification(`Successfully ${action} the join request`);
             
-            // Refresh pending requests
+            // Get user info for team ID
             const userInfo = await window.OpsieApi.getUserInfo();
-            if (userInfo && userInfo.data && userInfo.data.teamId) {
-                await loadPendingRequests(userInfo.data.teamId);
+            if (userInfo && userInfo.team_id) {
+                // Refresh pending requests
+                await loadPendingRequests(userInfo.team_id);
+                
+                // If request was approved, also refresh team members list and admin dropdown
+                if (approved) {
+                    log('Refreshing team members list after approval', 'info');
+                    await loadTeamMembers(userInfo.team_id);
+                }
             }
         } else {
             log('Failed to respond to join request', 'error');
@@ -4422,7 +5180,14 @@ async function handleTransferAdmin() {
             return;
         }
         
-        if (!confirm('Are you sure you want to transfer admin rights to this user? You will become a regular member.')) {
+        const confirmed = await showCustomConfirm(
+            'Are you sure you want to transfer admin rights to this user? You will become a regular member.',
+            'Transfer Admin Rights',
+            'Transfer',
+            'Cancel'
+        );
+        
+        if (!confirmed) {
             return;
         }
         
@@ -4435,7 +5200,16 @@ async function handleTransferAdmin() {
             showNotification('Admin rights transferred successfully');
             
             // Refresh user info and update the UI
-            await loadUserSettingsInfo();
+            await loadUserSettingsInfo(true); // Force refresh to get updated role
+            
+            // Update UI controls to reflect the new role (user is now a regular member)
+            setupTeamControls('member');
+            
+            // Reload team members to update the list and dropdown with the new admin
+            const userInfo = await window.OpsieApi.getUserInfo();
+            if (userInfo && userInfo.team_id) {
+                await loadTeamMembers(userInfo.team_id, true); // Force refresh
+            }
         } else {
             log('Failed to transfer admin rights', 'error');
             showErrorNotification('Failed to transfer admin rights');
@@ -4449,7 +5223,14 @@ async function handleTransferAdmin() {
 // Handler for leaving a team
 async function handleLeaveTeam() {
     try {
-        if (!confirm('Are you sure you want to leave this team? You will no longer have access to team data.')) {
+        const confirmed = await showCustomConfirm(
+            'Are you sure you want to leave this team? You will no longer have access to team data.',
+            'Leave Team',
+            'Leave',
+            'Cancel'
+        );
+        
+        if (!confirmed) {
             return;
         }
         
@@ -4466,6 +5247,14 @@ async function handleLeaveTeam() {
             
             // Update user info display
             await loadUserSettingsInfo();
+            
+            // Show team selection view so user can join or create a new team
+            if (typeof window.showTeamSelectView === 'function') {
+                log('Showing team selection view after leaving team', 'info');
+                window.showTeamSelectView();
+            } else {
+                log('showTeamSelectView function not available', 'error');
+            }
         } else {
             log('Failed to leave team', 'error');
             showErrorNotification('Failed to leave team');
@@ -4479,12 +5268,26 @@ async function handleLeaveTeam() {
 // Handler for deleting a team
 async function handleDeleteTeam() {
     try {
-        if (!confirm('Are you sure you want to delete this team? This action cannot be undone and will remove all team members.')) {
+        const firstConfirmed = await showCustomConfirm(
+            'Are you sure you want to delete this team? This action cannot be undone and will remove all team members.',
+            'Delete Team',
+            'Delete',
+            'Cancel'
+        );
+        
+        if (!firstConfirmed) {
             return;
         }
         
         // Double-check with a more explicit confirmation
-        if (!confirm('WARNING: This will permanently delete the team and remove all members. Type "DELETE" to confirm.')) {
+        const finalConfirmed = await showCustomConfirm(
+            'WARNING: This will permanently delete the team and remove all members. This action cannot be undone!',
+            'Final Confirmation - Delete Team',
+            'Delete Permanently',
+            'Cancel'
+        );
+        
+        if (!finalConfirmed) {
             return;
         }
         
@@ -4501,6 +5304,14 @@ async function handleDeleteTeam() {
             
             // Update user info display
             await loadUserSettingsInfo();
+            
+            // Show team selection view so user can join or create a new team
+            if (typeof window.showTeamSelectView === 'function') {
+                log('Showing team selection view after deleting team', 'info');
+                window.showTeamSelectView();
+            } else {
+                log('showTeamSelectView function not available', 'error');
+            }
         } else {
             log('Failed to delete team', 'error');
             showErrorNotification('Failed to delete team');
@@ -4539,12 +5350,12 @@ async function handleUpdateTeamDetails() {
         log('Updating team details', 'info', teamDetails);
         
         const userInfo = await window.OpsieApi.getUserInfo();
-        if (!userInfo || !userInfo.data || !userInfo.data.teamId) {
+        if (!userInfo || !userInfo.team_id) {
             showErrorNotification('No team ID found');
             return;
         }
         
-        const result = await window.OpsieApi.updateTeamDetails(userInfo.data.teamId, teamDetails);
+        const result = await window.OpsieApi.updateTeamDetails(userInfo.team_id, teamDetails);
         log('Update team details result', 'info', result);
         
         if (result && result.success) {
@@ -4554,7 +5365,7 @@ async function handleUpdateTeamDetails() {
             toggleTeamDetailsView();
             
             // Refresh team details
-            await loadTeamDetails(userInfo.data.teamId);
+            await loadTeamDetails(userInfo.team_id);
         } else {
             log('Failed to update team details', 'error');
             showErrorNotification('Failed to update team details');
@@ -4692,6 +5503,7 @@ async function proceedWithLogout() {
         // Hide any team-related sections
         hideTeamSections();
         
+        
         // Clear email-related data
         currentEmailData = null;
         
@@ -4722,7 +5534,7 @@ async function proceedWithLogout() {
         // Focus the email input field
         const emailInput = document.getElementById('auth-email');
         if (emailInput) {
-            setTimeout(() => {
+        setTimeout(() => {
                 emailInput.focus();
             }, 500);
         }
@@ -4737,6 +5549,31 @@ async function proceedWithLogout() {
  */
 function showMainUISections() {
     log('Showing main UI sections', 'info');
+    
+    // First check if user has a team - if not, show team selection view
+    const teamId = localStorage.getItem('currentTeamId');
+    if (!teamId) {
+        log('No team ID found, showing team selection view instead of main UI sections', 'warning');
+        
+        // Show team selection view instead of error notification
+        if (typeof window.showTeamSelectView === 'function') {
+            log('Calling showTeamSelectView function', 'info');
+            window.showTeamSelectView();
+        } else {
+            log('showTeamSelectView function not available, showing error notification', 'error');
+            showErrorNotification('You need to be assigned to a team to use this application. Please contact your administrator.');
+        }
+        return;
+    }
+    
+    // User has a team, show the main content container
+    const mainContent = document.getElementById('main-content');
+    if (mainContent) {
+        mainContent.style.display = 'block';
+        log('Showed main-content container after team validation', 'info');
+    } else {
+        log('main-content element not found', 'warning');
+    }
     
     // Get settings container ID to exclude it from general restoration
     const settingsContainerId = 'settings-container';
@@ -4859,7 +5696,7 @@ function setupSettingsEventListeners() {
                         log(`Restored saved display state for ${id}: ${displayState}`, 'info');
                     }
                 }
-            } catch (error) {
+    } catch (error) {
                 log('Error restoring saved display states: ' + error.message, 'error');
             }
             
@@ -4913,9 +5750,14 @@ function setupSettingsEventListeners() {
     const refreshRequestsButton = document.getElementById('refresh-requests-button');
     if (refreshRequestsButton) {
         refreshRequestsButton.addEventListener('click', async function() {
+            log('=== REFRESH REQUESTS BUTTON CLICKED ===', 'info');
             const userInfo = await window.OpsieApi.getUserInfo();
-            if (userInfo && userInfo.data && userInfo.data.teamId) {
-                await loadPendingRequests(userInfo.data.teamId);
+            log('User info for refresh:', 'info', userInfo);
+            if (userInfo && userInfo.team_id) {
+                log('Calling loadPendingRequests with team ID:', 'info', userInfo.team_id);
+                await loadPendingRequests(userInfo.team_id);
+            } else {
+                log('No team ID found for refresh', 'warning');
             }
         });
     }
@@ -5059,6 +5901,11 @@ async function handleExtractQuestions() {
     try {
         log('Extract questions button clicked', 'info');
         
+        // Check if user has a team
+        if (!checkTeamMembership()) {
+            return;
+        }
+        
         // Check if we have the current email data
         if (!currentEmailData) {
             log('No email data available for question extraction', 'error');
@@ -5075,11 +5922,6 @@ async function handleExtractQuestions() {
         
         // Get team ID for saving Q&A
         const teamId = localStorage.getItem('currentTeamId');
-        if (!teamId) {
-            log('No team ID available for Q&A operations', 'warning');
-            window.OpsieApi.showNotification('Team information is not available. Some Q&A features may be limited.', 'warning');
-            // Continue anyway as we can still extract questions
-        }
         
         // Show the QA container and set its initial state
         const qaContainer = document.getElementById('qa-container');
@@ -5107,6 +5949,20 @@ async function handleExtractQuestions() {
             noQuestionsMsg.style.display = 'none';
         } else {
             log('Warning: no-questions-message element not found', 'warning');
+        }
+        
+        // DEBUG: Check if there's an existing global questions array before extraction
+        if (window.OpsieApi.extractQuestionsAndAnswers && window.OpsieApi.extractQuestionsAndAnswers.questions) {
+            log('BEFORE EXTRACTION: Existing global questions array', 'debug', {
+                length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+                questions: window.OpsieApi.extractQuestionsAndAnswers.questions.map(q => ({ 
+                    text: q.text, 
+                    hasAnswer: !!q.answer,
+                    answerId: q.answerId
+                }))
+            });
+        } else {
+            log('BEFORE EXTRACTION: No existing global questions array', 'debug');
         }
         
         // Call the API to extract questions and find answers
@@ -5148,6 +6004,21 @@ async function handleExtractQuestions() {
             return;
         }
         
+        // Important: Make sure the global questions array is updated
+        if (!window.OpsieApi.extractQuestionsAndAnswers) {
+            window.OpsieApi.extractQuestionsAndAnswers = {};
+        }
+        window.OpsieApi.extractQuestionsAndAnswers.questions = result.questions;
+        
+        log('AFTER EXTRACTION: Updated global questions array', 'debug', {
+            length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+            questions: window.OpsieApi.extractQuestionsAndAnswers.questions.map(q => ({ 
+                text: q.text, 
+                hasAnswer: !!q.answer,
+                answerId: q.answerId
+            }))
+        });
+        
         // Display the extracted questions
         displayQuestions(result.questions);
         
@@ -5179,6 +6050,18 @@ async function handleExtractQuestions() {
                         
                         if (saveResult.success) {
                             question.answerId = saveResult.id;
+                            
+                            // Also update the question in the global array
+                            const globalQuestions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+                            const questionIndex = globalQuestions.findIndex(q => q.text === question.text);
+                            if (questionIndex >= 0) {
+                                globalQuestions[questionIndex] = question;
+                                log('Updated question in global array after save', 'debug', {
+                                    questionText: question.text,
+                                    answerId: saveResult.id
+                                });
+                            }
+                            
                             savedCount++;
                             log('Saved Q&A to database', 'info', { id: saveResult.id });
                         } else {
@@ -5192,6 +6075,16 @@ async function handleExtractQuestions() {
             
             if (savedCount > 0) {
                 log(`Saved ${savedCount} Q&A pairs to database`, 'info');
+                
+                // Final check of global questions array after saving
+                log('AFTER SAVING: Final global questions array state', 'debug', {
+                    length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+                    questions: window.OpsieApi.extractQuestionsAndAnswers.questions.map(q => ({ 
+                        text: q.text, 
+                        hasAnswer: !!q.answer,
+                        answerId: q.answerId
+                    }))
+                });
             }
         }
         
@@ -5223,6 +6116,70 @@ function displayQuestions(questions) {
     try {
         log('Displaying questions', 'info', questions);
         
+        // Add more detailed logging to understand empty array situation
+        log('DEBUG: displayQuestions called with', 'debug', {
+            questionsProvided: !!questions,
+            isArray: Array.isArray(questions),
+            length: questions ? questions.length : 0,
+            callerInfo: new Error().stack.split('\n')[2]  // This will show where displayQuestions was called from
+        });
+
+        // Check if questions is an empty array and provide a fallback
+        if (!questions || !Array.isArray(questions) || questions.length === 0) {
+            log('WARNING: displayQuestions called with empty or invalid questions array', 'warn');
+            
+            // Try to get questions from the global array as a fallback
+            if (window.OpsieApi.extractQuestionsAndAnswers && 
+                window.OpsieApi.extractQuestionsAndAnswers.questions && 
+                window.OpsieApi.extractQuestionsAndAnswers.questions.length > 0) {
+                
+                log('FALLBACK: Using global questions array instead of empty array', 'info', {
+                    length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+                    source: 'global array fallback'
+                });
+                
+                questions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+            } else {
+                // No questions to display
+                log('No questions to display - hiding qa-container, showing no-questions message', 'info');
+                
+                // Hide loading spinner
+                const loadingSpinner = document.getElementById('qa-loading-spinner');
+                if (loadingSpinner) {
+                    loadingSpinner.style.display = 'none';
+                }
+                
+                // Show the no questions message
+                const noQuestionsMsg = document.getElementById('no-questions-message');
+                if (noQuestionsMsg) {
+                    noQuestionsMsg.style.display = 'block';
+                }
+                
+                // Hide the qa-container
+                const qaContainer = document.getElementById('qa-container');
+                if (qaContainer) {
+                    qaContainer.style.display = 'block'; // Keep it visible but show the "no questions" message
+                }
+                
+                return;
+            }
+        }
+        
+        // Add detailed logging for each question
+        questions.forEach((question, index) => {
+            log(`Examining question object at index ${index}`, 'info', {
+                text: question.text,
+                hasAnswer: !!question.answer,
+                answerLength: question.answer ? question.answer.length : 0,
+                matchType: question.matchType,
+                source: question.source,
+                verified: question.verified,
+                originalQuestion: question.originalQuestion,
+                updatedAt: question.updatedAt,
+                allProperties: Object.keys(question)
+            });
+        });
+        
         const qaList = document.getElementById('qa-list');
         if (!qaList) {
             log('Q&A list element not found', 'error');
@@ -5241,16 +6198,49 @@ function displayQuestions(questions) {
             const questionItem = document.createElement('div');
             questionItem.className = 'question-item';
             questionItem.id = `question-${index}`;
+            questionItem.style.marginBottom = '20px';
+            questionItem.style.padding = '15px';
+            questionItem.style.borderRadius = '8px';
+            questionItem.style.boxShadow = '0 2px 5px rgba(0,0,0,0.08)';
+            questionItem.style.border = '1px solid #e5e5e5';
+            questionItem.style.backgroundColor = '#ffffff';
             
             // Create question header with text and confidence
             const questionHeader = document.createElement('div');
             questionHeader.className = 'question-header';
             
-            // Question text
+            // Question text - main content
             const questionText = document.createElement('div');
             questionText.className = 'question-text';
-            questionText.textContent = question.text;
+            questionText.style.fontSize = '1em';
+            questionText.style.fontWeight = '600';
+            questionText.style.color = '#333';
+            questionText.style.marginBottom = '8px';
+            questionText.style.lineHeight = '1.4';
+            
+            // Add manual question badge inline if applicable
+            if (question.isManual) {
+                const manualBadge = document.createElement('span');
+                manualBadge.textContent = 'Manual';
+                manualBadge.style.backgroundColor = '#6f42c1';
+                manualBadge.style.color = 'white';
+                manualBadge.style.padding = '2px 6px';
+                manualBadge.style.borderRadius = '8px';
+                manualBadge.style.fontSize = '0.7em';
+                manualBadge.style.fontWeight = '500';
+                manualBadge.style.marginRight = '8px';
+                manualBadge.style.display = 'inline-block';
+                questionText.appendChild(manualBadge);
+            }
+            
+            // Add the question text content
+            const questionTextContent = document.createElement('span');
+            questionTextContent.textContent = question.text;
+            questionText.appendChild(questionTextContent);
+            
             questionHeader.appendChild(questionText);
+            
+
             
             // Question confidence
             if (question.confidence) {
@@ -5264,8 +6254,55 @@ function displayQuestions(questions) {
                 questionHeader.appendChild(confidenceIndicator);
             }
             
+            // Add a subtle border after the header
+            questionHeader.style.paddingBottom = '12px';
+            questionHeader.style.borderBottom = '1px solid #eee';
+            questionHeader.style.marginBottom = '12px';
+            
             // Add header to question item
             questionItem.appendChild(questionHeader);
+            
+            // If we have semantic match info, display it
+            if (question.matchType === 'semantic' && question.originalQuestion && question.similarityScore) {
+                const matchInfo = document.createElement('div');
+                matchInfo.className = 'semantic-match-info';
+                matchInfo.innerHTML = `<strong>Similar to:</strong> "${question.originalQuestion}" <span class="similarity-score">(${Math.round(question.similarityScore * 100)}% match)</span>`;
+                matchInfo.style.backgroundColor = '#f8f9fa';
+                matchInfo.style.padding = '8px';
+                matchInfo.style.borderRadius = '4px';
+                matchInfo.style.marginBottom = '10px';
+                matchInfo.style.fontSize = '0.9em';
+                matchInfo.style.color = '#666';
+                matchInfo.style.fontStyle = 'italic';
+                
+                // Add a similarity badge
+                const similarityBadge = document.createElement('span');
+                similarityBadge.className = 'similarity-badge';
+                similarityBadge.textContent = `${Math.round(question.similarityScore * 100)}%`;
+                similarityBadge.style.backgroundColor = question.similarityScore > 0.9 ? '#28a745' : 
+                                                     question.similarityScore > 0.8 ? '#17a2b8' : '#ffc107';
+                similarityBadge.style.color = question.similarityScore > 0.8 ? 'white' : 'black';
+                similarityBadge.style.padding = '2px 6px';
+                similarityBadge.style.borderRadius = '10px';
+                similarityBadge.style.fontSize = '0.8em';
+                similarityBadge.style.marginLeft = '5px';
+                
+                matchInfo.appendChild(similarityBadge);
+                questionItem.appendChild(matchInfo);
+            } else if (question.matchType === 'fuzzy' && question.originalQuestion) {
+                // For fuzzy matches, also show the original question
+                const matchInfo = document.createElement('div');
+                matchInfo.className = 'fuzzy-match-info';
+                matchInfo.innerHTML = `<strong>Similar to:</strong> "${question.originalQuestion}"`;
+                matchInfo.style.backgroundColor = '#fff8e1';
+                matchInfo.style.padding = '8px';
+                matchInfo.style.borderRadius = '4px';
+                matchInfo.style.marginBottom = '10px';
+                matchInfo.style.fontSize = '0.9em';
+                matchInfo.style.color = '#856404';
+                matchInfo.style.fontStyle = 'italic';
+                questionItem.appendChild(matchInfo);
+            }
             
             // Create answer container
             const answerContainer = document.createElement('div');
@@ -5273,78 +6310,282 @@ function displayQuestions(questions) {
             
             // Check if we have an answer
             if (question.answer) {
+                // Add answer type indicator if available
+                if (question.answerType) {
+                    const answerTypeLabel = document.createElement('div');
+                    answerTypeLabel.className = 'answer-type-label';
+                    answerTypeLabel.style.fontSize = '0.8em';
+                    answerTypeLabel.style.fontWeight = '600';
+                    answerTypeLabel.style.color = '#666';
+                    answerTypeLabel.style.marginBottom = '8px';
+                    answerTypeLabel.style.textTransform = 'uppercase';
+                    answerTypeLabel.style.letterSpacing = '0.5px';
+                    
+                    // Map answer types to readable labels with icons
+                    const typeLabels = {
+                        'factual': '📊 Factual Information',
+                        'procedural': '📋 Process/Procedure',
+                        'contact_info': '👥 Contact Information',
+                        'timeline': '⏰ Timeline/Schedule',
+                        'technical': '🔧 Technical Details',
+                        'status': '📈 Status Update'
+                    };
+                    
+                    answerTypeLabel.textContent = typeLabels[question.answerType] || `💡 ${question.answerType}`;
+                    answerContainer.appendChild(answerTypeLabel);
+                }
+                
                 // Create answer text element
                 const answerText = document.createElement('div');
                 answerText.className = 'answer-text';
                 answerText.textContent = question.answer;
+                // Enhanced styling to make answer stand out
+                answerText.style.fontSize = '1.1em';
+                answerText.style.fontWeight = '500';
+                answerText.style.padding = '16px 20px';
+                answerText.style.margin = '8px 0 12px 0';
+                answerText.style.lineHeight = '1.5';
+                
+                // Different styling based on answer type
+                if (question.answerType === 'contact_info') {
+                    answerText.style.backgroundColor = '#e8f5e8';
+                    answerText.style.border = '1px solid #28a745';
+                    answerText.style.color = '#155724';
+                } else if (question.answerType === 'timeline') {
+                    answerText.style.backgroundColor = '#fff3cd';
+                    answerText.style.border = '1px solid #ffc107';
+                    answerText.style.color = '#856404';
+                } else if (question.answerType === 'technical') {
+                    answerText.style.backgroundColor = '#f8d7da';
+                    answerText.style.border = '1px solid #dc3545';
+                    answerText.style.color = '#721c24';
+                } else {
+                    // Default styling
+                answerText.style.backgroundColor = '#f0f7ff';
+                answerText.style.border = '1px solid #cce5ff';
+                answerText.style.color = '#0d47a1';
+                }
+                
+                answerText.style.borderRadius = '8px';
+                answerText.style.boxShadow = '0 2px 4px rgba(0,0,0,0.08)';
                 answerContainer.appendChild(answerText);
                 
-                // If we have references, add them
-                if (question.references && question.references.length > 0) {
-                    const referencesContainer = document.createElement('div');
-                    referencesContainer.className = 'answer-references';
+                // Add source information
+                if (question.source) {
+                    const sourceInfo = document.createElement('div');
+                    sourceInfo.className = 'answer-source';
+                    sourceInfo.style.fontSize = '0.85em';
+                    sourceInfo.style.fontStyle = 'italic';
+                    sourceInfo.style.color = '#666';
+                    sourceInfo.style.marginTop = '8px';
+                    sourceInfo.style.padding = '8px 10px';
+                    sourceInfo.style.backgroundColor = '#f9f9f9';
+                    sourceInfo.style.borderRadius = '4px';
+                    sourceInfo.style.borderLeft = '3px solid #ddd';
+                    sourceInfo.style.fontSize = '0.8em';
+                    sourceInfo.style.lineHeight = '1.4';
                     
-                    // Add title
-                    const referencesTitle = document.createElement('div');
-                    referencesTitle.className = 'references-title';
-                    referencesTitle.textContent = 'References:';
-                    referencesContainer.appendChild(referencesTitle);
+                    let sourceText = '';
                     
-                    // Add each reference
-                    question.references.forEach(reference => {
-                        const referenceItem = document.createElement('div');
-                        referenceItem.className = 'reference-item';
+                    if (question.source === 'database') {
+                        // Create a more compact display with badges
+                        let matchBadge = '';
                         
-                        // Format the reference
-                        let referenceText = '';
-                        if (reference.source) referenceText += `From: ${reference.source}`;
-                        if (reference.date) referenceText += ` - ${new Date(reference.date).toLocaleDateString()}`;
-                        if (reference.quote) referenceText += `\n"${reference.quote}"`;
+                        if (question.matchType === 'exact') {
+                            matchBadge = '<span style="background-color:#28a745;color:white;padding:2px 6px;border-radius:10px;margin-right:5px;">Exact match</span>';
+                        } else if (question.matchType === 'semantic') {
+                            const score = Math.round(question.similarityScore * 100);
+                            const colorClass = score > 90 ? '#28a745' : score > 75 ? '#17a2b8' : '#ffc107';
+                            matchBadge = `<span style="background-color:${colorClass};color:${score > 75 ? 'white' : 'black'};padding:2px 6px;border-radius:10px;margin-right:5px;">Similar (${score}%)</span>`;
+                        } else if (question.matchType === 'fuzzy') {
+                            matchBadge = '<span style="background-color:#ffc107;color:black;padding:2px 6px;border-radius:10px;margin-right:5px;">Keyword match</span>';
+                        } 
                         
-                        referenceItem.textContent = referenceText;
-                        referencesContainer.appendChild(referenceItem);
-                    });
+                        // Add verification badge if verified
+                        const verifiedBadge = question.verified ? 
+                            '<span style="background-color:#28a745;color:white;padding:2px 6px;border-radius:10px;margin-left:5px;">✓ Verified</span>' : '';
+                        
+                        sourceText += `<div style="display:flex;align-items:center;margin-bottom:4px;">${matchBadge}From knowledge base:${verifiedBadge}</div>`;
+                        
+                        // Add the original question in a more compact form
+                        if (question.originalQuestion && (question.matchType === 'semantic' || question.matchType === 'fuzzy')) {
+                            sourceText += `<div style="margin-top:4px;color:#555;"><small>Similar to:</small> "${question.originalQuestion}"</div>`;
+                        }
+                        
+                        // Add the last updated timestamp if available
+                        if (question.updatedAt) {
+                            try {
+                                const lastUpdated = new Date(question.updatedAt);
+                                const formattedDate = lastUpdated.toLocaleDateString();
+                                const timeAgo = getTimeAgo(lastUpdated);
+                                sourceText += `<div style="margin-top:4px;color:#666;"><small>Last updated:</small> ${formattedDate} (${timeAgo})</div>`;
+                            } catch (dateError) {
+                                log('Error formatting date from updatedAt', 'error', {
+                                    error: dateError.message,
+                                    updatedAt: question.updatedAt
+                                });
+                            }
+                        }
+                        
+                        // Add source filename if available
+                        if (question.sourceFilename && question.sourceFilename.trim() !== '') {
+                            sourceText += `<div style="margin-top:4px;color:#666;"><small>Source:</small> ${question.sourceFilename}</div>`;
+                        }
+                    } else if (question.source === 'search') {
+                        sourceText = '<span style="background-color:#6c757d;color:white;padding:2px 6px;border-radius:10px;margin-right:5px;">Email search</span>';
+                        
+                        // Add date found if available
+                        if (question.foundDate) {
+                            const foundDate = new Date(question.foundDate);
+                            sourceText += ` <small>on</small> ${foundDate.toLocaleDateString()}`;
+                        }
+                    }
                     
-                    answerContainer.appendChild(referencesContainer);
+                    sourceInfo.innerHTML = sourceText;
+                    answerContainer.appendChild(sourceInfo);
+                    
+                    // Add action buttons for database matches or search results
+                    if (question.source === 'database' || question.source === 'search') {
+                        // Create action buttons container
+                        const actionContainer = document.createElement('div');
+                        actionContainer.className = 'action-buttons-container';
+                        actionContainer.style.display = 'flex';
+                        actionContainer.style.marginTop = '10px';
+                        actionContainer.style.gap = '8px';
+                        
+                        if (question.source === 'database') {
+                            // Edit Answer button - always include this for database answers
+                            const editButton = document.createElement('button');
+                            editButton.textContent = question.matchType === 'exact' ? 'Edit Answer' : 'Edit Matched Answer';
+                            editButton.className = 'qa-button qa-button-edit';
+                            editButton.style.backgroundColor = '#4a89dc';
+                            editButton.style.color = 'white';
+                            editButton.style.border = 'none';
+                            editButton.style.padding = '6px 12px';
+                            editButton.style.borderRadius = '4px';
+                            editButton.style.cursor = 'pointer';
+                            editButton.style.fontSize = '0.85em';
+                            editButton.style.fontWeight = '500';
+                            editButton.onclick = () => question.matchType === 'exact' 
+                                ? editAnswer(index, question) 
+                                : editMatchedAnswer(index, question);
+                            actionContainer.appendChild(editButton);
+                            
+                            // Only add "New Submission" button for non-exact matches
+                            if (question.matchType !== 'exact') {
+                                // New Submission button - creates a new entry with the extracted question
+                                const newSubmissionButton = document.createElement('button');
+                                newSubmissionButton.textContent = 'New Submission';
+                                newSubmissionButton.className = 'qa-button qa-button-new';
+                                newSubmissionButton.style.backgroundColor = '#5cb85c';
+                                newSubmissionButton.style.color = 'white';
+                                newSubmissionButton.style.border = 'none';
+                                newSubmissionButton.style.padding = '6px 12px';
+                                newSubmissionButton.style.borderRadius = '4px';
+                                newSubmissionButton.style.cursor = 'pointer';
+                                newSubmissionButton.style.fontSize = '0.85em';
+                                newSubmissionButton.style.fontWeight = '500';
+                                newSubmissionButton.onclick = () => createNewSubmission(index, question);
+                                
+                                // Add tooltip
+                                newSubmissionButton.title = 'Create a new entry with this exact question';
+                                actionContainer.appendChild(newSubmissionButton);
+                            }
+                            
+                            // Add tooltip for edit button
+                            editButton.title = question.matchType === 'exact' 
+                                ? 'Edit this answer in the database' 
+                                : 'Edit the answer for the matched question in the database';
+                        } else if (question.source === 'search') {
+                            // For search results, add both Edit and Save to Database buttons
+                            
+                            // Edit button for search results
+                            const editButton = document.createElement('button');
+                            editButton.textContent = 'Edit Answer';
+                            editButton.className = 'qa-button qa-button-edit';
+                            editButton.style.backgroundColor = '#4a89dc';
+                            editButton.style.color = 'white';
+                            editButton.style.border = 'none';
+                            editButton.style.padding = '6px 12px';
+                            editButton.style.borderRadius = '4px';
+                            editButton.style.cursor = 'pointer';
+                            editButton.style.fontSize = '0.85em';
+                            editButton.style.fontWeight = '500';
+                            editButton.onclick = () => editSearchAnswer(index, question);
+                            editButton.title = 'Edit this search result answer';
+                            actionContainer.appendChild(editButton);
+                            
+                            // Save to Database button
+                            const saveButton = document.createElement('button');
+                            saveButton.textContent = 'Save to KB';
+                            saveButton.className = 'qa-button qa-button-save-to-db';
+                            saveButton.style.backgroundColor = '#5cb85c';
+                            saveButton.style.color = 'white';
+                            saveButton.style.border = 'none';
+                            saveButton.style.padding = '6px 12px';
+                            saveButton.style.borderRadius = '4px';
+                            saveButton.style.cursor = 'pointer';
+                            saveButton.style.fontSize = '0.85em';
+                            saveButton.style.fontWeight = '500';
+                            saveButton.onclick = () => saveSearchToDatabase(index, question);
+                            saveButton.title = 'Save this answer to the knowledge base';
+                            actionContainer.appendChild(saveButton);
+                        }
+                        
+                        // Add container after source info
+                        answerContainer.appendChild(actionContainer);
+                    }
                 }
-                
-                // Add verification status and buttons
-                const actionButtons = document.createElement('div');
-                actionButtons.className = 'answer-actions';
-                
-                // Verify button
-                const verifyButton = document.createElement('button');
-                verifyButton.className = 'verify-answer-button';
-                verifyButton.textContent = question.verified ? 'Verified ✓' : 'Verify';
-                if (question.verified) {
-                    verifyButton.classList.add('verified');
-                    verifyButton.disabled = true;
-                } else {
-                    verifyButton.onclick = () => verifyAnswer(index, question);
-                }
-                actionButtons.appendChild(verifyButton);
-                
-                // Edit button
-                const editButton = document.createElement('button');
-                editButton.className = 'edit-answer-button';
-                editButton.textContent = 'Edit';
-                editButton.onclick = () => editAnswer(index, question);
-                actionButtons.appendChild(editButton);
-                
-                answerContainer.appendChild(actionButtons);
             } else {
-                // No answer found
-                const noAnswerMessage = document.createElement('div');
-                noAnswerMessage.className = 'no-answer-message';
-                noAnswerMessage.textContent = 'No answer found in available emails.';
-                answerContainer.appendChild(noAnswerMessage);
+                // No answer available - show helpful message with more context
+                const noAnswerContainer = document.createElement('div');
+                noAnswerContainer.className = 'no-answer-container';
+                noAnswerContainer.style.padding = '20px';
+                noAnswerContainer.style.backgroundColor = '#fff8e1';
+                noAnswerContainer.style.border = '1px solid #ffecb3';
+                noAnswerContainer.style.borderRadius = '8px';
+                noAnswerContainer.style.textAlign = 'center';
+                noAnswerContainer.style.marginBottom = '10px';
                 
-                // Add button to add an answer manually
+                const noAnswerIcon = document.createElement('div');
+                noAnswerIcon.textContent = '🤔';
+                noAnswerIcon.style.fontSize = '2em';
+                noAnswerIcon.style.marginBottom = '8px';
+                noAnswerContainer.appendChild(noAnswerIcon);
+                
+                const noAnswerTitle = document.createElement('h4');
+                noAnswerTitle.textContent = 'No Answer Found';
+                noAnswerTitle.style.margin = '0 0 8px 0';
+                noAnswerTitle.style.color = '#856404';
+                noAnswerTitle.style.fontSize = '1.1em';
+                noAnswerContainer.appendChild(noAnswerTitle);
+                
+                const noAnswerText = document.createElement('p');
+                noAnswerText.textContent = 'This question wasn\'t found in your team\'s emails or knowledge base.';
+                noAnswerText.style.margin = '0 0 15px 0';
+                noAnswerText.style.color = '#856404';
+                noAnswerText.style.lineHeight = '1.4';
+                noAnswerContainer.appendChild(noAnswerText);
+                
+                const helpText = document.createElement('p');
+                helpText.innerHTML = '<strong>You can help!</strong> Add an answer to build your team\'s knowledge base.';
+                helpText.style.margin = '0 0 15px 0';
+                helpText.style.color = '#856404';
+                helpText.style.fontSize = '0.9em';
+                noAnswerContainer.appendChild(helpText);
+                
                 const addAnswerButton = document.createElement('button');
-                addAnswerButton.className = 'add-answer-button';
-                addAnswerButton.textContent = 'Add Answer';
+                addAnswerButton.textContent = '✍️ Add Answer';
+                addAnswerButton.className = 'action-button';
+                addAnswerButton.style.backgroundColor = '#28a745';
+                addAnswerButton.style.color = 'white';
+                addAnswerButton.style.padding = '10px 20px';
+                addAnswerButton.style.fontSize = '1em';
+                addAnswerButton.style.fontWeight = '500';
                 addAnswerButton.onclick = () => addAnswer(index, question);
-                answerContainer.appendChild(addAnswerButton);
+                noAnswerContainer.appendChild(addAnswerButton);
+                
+                answerContainer.appendChild(noAnswerContainer);
             }
             
             questionItem.appendChild(answerContainer);
@@ -5494,43 +6735,163 @@ function editAnswer(index, question) {
         // Get the current answer text
         const currentAnswerText = question.answer || '';
         
-        // Create edit form
+        // Create edit form with enhanced styling
         const editForm = document.createElement('div');
         editForm.className = 'answer-edit-form';
+        editForm.style.padding = '20px';
+        editForm.style.backgroundColor = '#f8f9fa';
+        editForm.style.border = '1px solid #e9ecef';
+        editForm.style.borderRadius = '8px';
+        editForm.style.marginBottom = '10px';
         
-        // Create textarea for editing
+        // Create form header
+        const formHeader = document.createElement('div');
+        formHeader.style.marginBottom = '15px';
+        formHeader.style.display = 'flex';
+        formHeader.style.alignItems = 'center';
+        formHeader.style.gap = '8px';
+        
+        const headerIcon = document.createElement('span');
+        headerIcon.textContent = '✏️';
+        headerIcon.style.fontSize = '1.2em';
+        formHeader.appendChild(headerIcon);
+        
+        const headerText = document.createElement('h4');
+        headerText.textContent = 'Edit Answer';
+        headerText.style.margin = '0';
+        headerText.style.color = '#495057';
+        headerText.style.fontSize = '1em';
+        headerText.style.fontWeight = '600';
+        formHeader.appendChild(headerText);
+        
+        editForm.appendChild(formHeader);
+        
+        // Create textarea with enhanced styling
         const textarea = document.createElement('textarea');
         textarea.className = 'answer-edit-textarea';
         textarea.value = currentAnswerText;
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '120px';
+        textarea.style.padding = '15px';
+        textarea.style.border = '2px solid #ced4da';
+        textarea.style.borderRadius = '6px';
+        textarea.style.fontSize = '14px';
+        textarea.style.lineHeight = '1.5';
+        textarea.style.resize = 'vertical';
+        textarea.style.fontFamily = 'inherit';
+        textarea.style.boxSizing = 'border-box';
+        textarea.style.transition = 'border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out';
+        
+        // Add focus styling
+        textarea.addEventListener('focus', () => {
+            textarea.style.borderColor = '#007bff';
+            textarea.style.outline = 'none';
+            textarea.style.boxShadow = '0 0 0 0.2rem rgba(0, 123, 255, 0.25)';
+        });
+        
+        textarea.addEventListener('blur', () => {
+            textarea.style.borderColor = '#ced4da';
+            textarea.style.boxShadow = 'none';
+        });
+        
         editForm.appendChild(textarea);
         
-        // Create buttons container
+        // Create buttons container with enhanced styling
         const buttonsContainer = document.createElement('div');
         buttonsContainer.className = 'edit-action-buttons';
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.gap = '12px';
+        buttonsContainer.style.marginTop = '15px';
+        buttonsContainer.style.justifyContent = 'flex-end';
         
-        // Create save button
+        // Create save button with compact styling
         const saveButton = document.createElement('button');
         saveButton.className = 'save-answer-button';
         saveButton.textContent = 'Save';
+        saveButton.style.backgroundColor = '#007bff';
+        saveButton.style.color = 'white';
+        saveButton.style.border = 'none';
+        saveButton.style.padding = '8px 16px';
+        saveButton.style.borderRadius = '6px';
+        saveButton.style.cursor = 'pointer';
+        saveButton.style.fontSize = '13px';
+        saveButton.style.fontWeight = '500';
+        saveButton.style.transition = 'all 0.15s ease-in-out';
+        saveButton.style.boxShadow = '0 2px 4px rgba(0, 123, 255, 0.2)';
+        saveButton.style.flex = '1';
+        saveButton.style.maxWidth = '80px';
+        
+        // Add hover effects
+        saveButton.addEventListener('mouseenter', () => {
+            saveButton.style.backgroundColor = '#0056b3';
+            saveButton.style.transform = 'translateY(-1px)';
+            saveButton.style.boxShadow = '0 4px 8px rgba(0, 123, 255, 0.3)';
+        });
+        
+        saveButton.addEventListener('mouseleave', () => {
+            saveButton.style.backgroundColor = '#007bff';
+            saveButton.style.transform = 'translateY(0)';
+            saveButton.style.boxShadow = '0 2px 4px rgba(0, 123, 255, 0.2)';
+        });
+        
         saveButton.onclick = () => saveEditedAnswer(index, question, textarea.value);
         buttonsContainer.appendChild(saveButton);
         
-        // Create cancel button
+        // Create cancel button with compact styling
         const cancelButton = document.createElement('button');
         cancelButton.className = 'cancel-edit-button';
         cancelButton.textContent = 'Cancel';
+        cancelButton.style.backgroundColor = '#6c757d';
+        cancelButton.style.color = 'white';
+        cancelButton.style.border = 'none';
+        cancelButton.style.padding = '8px 16px';
+        cancelButton.style.borderRadius = '6px';
+        cancelButton.style.cursor = 'pointer';
+        cancelButton.style.fontSize = '13px';
+        cancelButton.style.fontWeight = '500';
+        cancelButton.style.transition = 'all 0.15s ease-in-out';
+        cancelButton.style.boxShadow = '0 2px 4px rgba(108, 117, 125, 0.2)';
+        cancelButton.style.flex = '1';
+        cancelButton.style.maxWidth = '80px';
+        
+        // Add hover effects
+        cancelButton.addEventListener('mouseenter', () => {
+            cancelButton.style.backgroundColor = '#5a6268';
+            cancelButton.style.transform = 'translateY(-1px)';
+            cancelButton.style.boxShadow = '0 4px 8px rgba(108, 117, 125, 0.3)';
+        });
+        
+        cancelButton.addEventListener('mouseleave', () => {
+            cancelButton.style.backgroundColor = '#6c757d';
+            cancelButton.style.transform = 'translateY(0)';
+            cancelButton.style.boxShadow = '0 2px 4px rgba(108, 117, 125, 0.2)';
+        });
+        
         cancelButton.onclick = () => cancelEdit(index, question);
         buttonsContainer.appendChild(cancelButton);
         
         editForm.appendChild(buttonsContainer);
+        
+        // Add helpful tip
+        const tipText = document.createElement('div');
+        tipText.style.fontSize = '12px';
+        tipText.style.color = '#6c757d';
+        tipText.style.marginTop = '10px';
+        tipText.style.padding = '8px 12px';
+        tipText.style.backgroundColor = '#e9ecef';
+        tipText.style.borderRadius = '4px';
+        tipText.style.fontStyle = 'italic';
+        tipText.innerHTML = '💡 <strong>Tip:</strong> Your changes will be saved to the team knowledge base and marked as updated.';
+        editForm.appendChild(tipText);
         
         // Store the original content and replace with edit form
         answerContainer.dataset.originalContent = answerContainer.innerHTML;
         answerContainer.innerHTML = '';
         answerContainer.appendChild(editForm);
         
-        // Focus the textarea
+        // Focus the textarea and select all text for easy editing
         textarea.focus();
+        textarea.select();
     } catch (error) {
         log('Exception in editAnswer', 'error', error);
         window.OpsieApi.showNotification(`Error editing answer: ${error.message}`, 'error');
@@ -5607,32 +6968,103 @@ async function saveEditedAnswer(index, question, newAnswer) {
             }
         }
         
-        // Re-render the question
-        const questionElement = document.getElementById(`question-${index}`);
-        if (questionElement) {
-            const parent = questionElement.parentNode;
-            parent.removeChild(questionElement);
+        // Update the global questions array and redisplay all questions
+        if (window.OpsieApi.extractQuestionsAndAnswers && 
+            window.OpsieApi.extractQuestionsAndAnswers.questions) {
             
-            // Re-display all questions
-            const questions = [];
-            for (let i = 0; i < parent.childElementCount + 1; i++) {
-                const qElement = document.getElementById(`question-${i}`);
-                if (qElement) {
-                    const qData = window.OpsieApi.extractQuestionsAndAnswers.questions[i];
-                    if (qData) {
-                        questions.push(qData);
-                    }
-                }
+            // Find and update the question in the global array
+            const globalQuestions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+            const questionIndex = globalQuestions.findIndex(q => 
+                q.text === question.text || 
+                (q.id && q.id === question.id) ||
+                (q.answerId && q.answerId === question.answerId)
+            );
+            
+            if (questionIndex >= 0) {
+                // Update the question in the global array
+                globalQuestions[questionIndex] = question;
+                log('Updated question in global array after edit', 'info', {
+                    index: questionIndex,
+                    questionText: question.text,
+                    answerId: question.answerId
+                });
+            } else {
+                // If not found, add it to the global array
+                globalQuestions.push(question);
+                log('Added edited question to global array', 'info', {
+                    questionText: question.text,
+                    answerId: question.answerId
+                });
             }
             
-            displayQuestions(questions);
+            log('Global questions array after edit', 'debug', {
+                length: globalQuestions.length,
+                questions: globalQuestions.map(q => ({
+                    text: q.text,
+                    hasAnswer: !!q.answer,
+                    answerId: q.answerId
+                }))
+            });
+            
+            // Redisplay all questions
+            displayQuestions(globalQuestions);
+        } else {
+            log('Warning: No global questions array available for update', 'warning');
+            
+            // Fallback to updating just this specific question's UI without full redisplay
+            const questionElement = document.getElementById(`question-${index}`);
+            if (questionElement) {
+                // Cancel the edit mode
+                cancelEdit(index, question);
+                
+                // Update the answer text
+                const answerText = questionElement.querySelector('.answer-text');
+                if (answerText) {
+                    answerText.textContent = newAnswer;
+                }
+                
+                // Update the source info
+                const sourceInfo = questionElement.querySelector('.answer-source');
+                if (sourceInfo) {
+                    // Only completely replace the source info for new entries that weren't exact matches before
+                    if (!question.matchType || question.matchType !== 'exact') {
+                        // This is a new entry or a non-exact match that we've edited, so update to show as an exact match
+                        sourceInfo.innerHTML = '<div style="display:flex;align-items:center;margin-bottom:4px;"><span style="background-color:#28a745;color:white;padding:2px 6px;border-radius:10px;margin-right:5px;">Exact match</span>From knowledge base:<span style="background-color:#28a745;color:white;padding:2px 6px;border-radius:10px;margin-left:5px;">✓ Verified</span></div>';
+                        
+                        // Remove the action buttons since this is now an exact match
+                        const actionContainer = sourceInfo.querySelector('.action-buttons-container');
+                        if (actionContainer) {
+                            sourceInfo.removeChild(actionContainer);
+                        }
+                    } else {
+                        // This was already an exact match, so just update the timestamp
+                        const lastUpdatedDiv = sourceInfo.querySelector('div[style*="margin-top:4px;color:#666;"]');
+                        if (lastUpdatedDiv) {
+                            const now = new Date();
+                            const formattedDate = now.toLocaleDateString();
+                            lastUpdatedDiv.innerHTML = `<small>Last updated:</small> ${formattedDate} (just now)`;
+                        }
+                    }
+                }
+                
+                // Add a quick animation to highlight the change
+                if (answerText) {
+                    answerText.style.transition = 'background-color 0.5s ease';
+                    answerText.style.backgroundColor = '#e6f7ff';
+                    setTimeout(() => {
+                        answerText.style.backgroundColor = '#f0f7ff';
+                    }, 1000);
+                }
+                
+                log('Updated answer display in UI without redisplay', 'info');
+            }
         }
         
-        // Show notification
+        // Show success notification
         window.OpsieApi.showNotification('Answer updated successfully!', 'success');
     } catch (error) {
         log('Exception in saveEditedAnswer', 'error', error);
-        window.OpsieApi.showNotification(`Error saving answer: ${error.message}`, 'error');
+        window.OpsieApi.showNotification(`Error saving edited answer: ${error.message}`, 'error');
     }
 }
 
@@ -5651,9 +7083,47 @@ function cancelEdit(index, question) {
             return;
         }
         
-        // Restore the original content
+        // Instead of just restoring the HTML content, we'll parse it and recreate the DOM elements
+        // to ensure the event listeners are properly attached
+        
+        // First, restore the original HTML content
         answerContainer.innerHTML = answerContainer.dataset.originalContent;
         delete answerContainer.dataset.originalContent;
+        
+        // Now reattach event listeners to the buttons
+        if (question.source === 'database') {
+            // Find the action buttons container
+            const actionContainer = answerContainer.querySelector('.action-buttons-container');
+            if (actionContainer) {
+                // Find the edit button
+                const editButton = actionContainer.querySelector('.qa-button-edit');
+                if (editButton) {
+                    // Reattach the correct event listener
+                    editButton.onclick = () => question.matchType === 'exact' 
+                        ? editAnswer(index, question) 
+                        : editMatchedAnswer(index, question);
+                }
+                
+                // Find the new submission button (if it exists)
+                if (question.matchType !== 'exact') {
+                    const newSubmissionButton = actionContainer.querySelector('.qa-button-new');
+                    if (newSubmissionButton) {
+                        newSubmissionButton.onclick = () => createNewSubmission(index, question);
+                    }
+                }
+            }
+        } else if (!question.answer) {
+            // For questions without answers, reattach the add answer button
+            const addAnswerButton = answerContainer.querySelector('.action-button');
+            if (addAnswerButton) {
+                addAnswerButton.onclick = () => addAnswer(index, question);
+                log('Reattached Add Answer button event listener', 'info');
+            } else {
+                log('Add Answer button not found during cancel', 'warning');
+            }
+        }
+        
+        log('Successfully restored original content and reattached event listeners', 'info');
     } catch (error) {
         log('Exception in cancelEdit', 'error', error);
         window.OpsieApi.showNotification(`Error canceling edit: ${error.message}`, 'error');
@@ -5675,43 +7145,163 @@ function addAnswer(index, question) {
             return;
         }
         
-        // Create edit form
+        // Create edit form with enhanced styling
         const editForm = document.createElement('div');
         editForm.className = 'answer-edit-form';
+        editForm.style.padding = '20px';
+        editForm.style.backgroundColor = '#f8f9fa';
+        editForm.style.border = '1px solid #e9ecef';
+        editForm.style.borderRadius = '8px';
+        editForm.style.marginBottom = '10px';
         
-        // Create textarea for editing
+        // Create form header
+        const formHeader = document.createElement('div');
+        formHeader.style.marginBottom = '15px';
+        formHeader.style.display = 'flex';
+        formHeader.style.alignItems = 'center';
+        formHeader.style.gap = '8px';
+        
+        const headerIcon = document.createElement('span');
+        headerIcon.textContent = '✍️';
+        headerIcon.style.fontSize = '1.2em';
+        formHeader.appendChild(headerIcon);
+        
+        const headerText = document.createElement('h4');
+        headerText.textContent = 'Add Your Answer';
+        headerText.style.margin = '0';
+        headerText.style.color = '#495057';
+        headerText.style.fontSize = '1em';
+        headerText.style.fontWeight = '600';
+        formHeader.appendChild(headerText);
+        
+        editForm.appendChild(formHeader);
+        
+        // Create textarea with enhanced styling
         const textarea = document.createElement('textarea');
         textarea.className = 'answer-edit-textarea';
-        textarea.placeholder = 'Enter your answer here...';
+        textarea.placeholder = 'Enter your answer here... Be specific and helpful!';
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '120px';
+        textarea.style.padding = '15px';
+        textarea.style.border = '2px solid #ced4da';
+        textarea.style.borderRadius = '6px';
+        textarea.style.fontSize = '14px';
+        textarea.style.lineHeight = '1.5';
+        textarea.style.resize = 'vertical';
+        textarea.style.fontFamily = 'inherit';
+        textarea.style.boxSizing = 'border-box';
+        textarea.style.transition = 'border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out';
+        
+        // Add focus styling
+        textarea.addEventListener('focus', () => {
+            textarea.style.borderColor = '#28a745';
+            textarea.style.outline = 'none';
+            textarea.style.boxShadow = '0 0 0 0.2rem rgba(40, 167, 69, 0.25)';
+        });
+        
+        textarea.addEventListener('blur', () => {
+            textarea.style.borderColor = '#ced4da';
+            textarea.style.boxShadow = 'none';
+        });
+        
         editForm.appendChild(textarea);
         
-        // Create buttons container
+        // Create buttons container with enhanced styling
         const buttonsContainer = document.createElement('div');
         buttonsContainer.className = 'edit-action-buttons';
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.gap = '12px';
+        buttonsContainer.style.marginTop = '15px';
+        buttonsContainer.style.justifyContent = 'flex-end';
         
-        // Create save button
+        // Create save button with compact styling
         const saveButton = document.createElement('button');
         saveButton.className = 'save-answer-button';
         saveButton.textContent = 'Save';
+        saveButton.style.backgroundColor = '#28a745';
+        saveButton.style.color = 'white';
+        saveButton.style.border = 'none';
+        saveButton.style.padding = '8px 16px';
+        saveButton.style.borderRadius = '6px';
+        saveButton.style.cursor = 'pointer';
+        saveButton.style.fontSize = '13px';
+        saveButton.style.fontWeight = '500';
+        saveButton.style.transition = 'all 0.15s ease-in-out';
+        saveButton.style.boxShadow = '0 2px 4px rgba(40, 167, 69, 0.2)';
+        saveButton.style.flex = '1';
+        saveButton.style.maxWidth = '80px';
+        
+        // Add hover effects
+        saveButton.addEventListener('mouseenter', () => {
+            saveButton.style.backgroundColor = '#218838';
+            saveButton.style.transform = 'translateY(-1px)';
+            saveButton.style.boxShadow = '0 4px 8px rgba(40, 167, 69, 0.3)';
+        });
+        
+        saveButton.addEventListener('mouseleave', () => {
+            saveButton.style.backgroundColor = '#28a745';
+            saveButton.style.transform = 'translateY(0)';
+            saveButton.style.boxShadow = '0 2px 4px rgba(40, 167, 69, 0.2)';
+        });
+        
         saveButton.onclick = () => saveNewAnswer(index, question, textarea.value);
         buttonsContainer.appendChild(saveButton);
         
-        // Create cancel button
+        // Create cancel button with compact styling
         const cancelButton = document.createElement('button');
         cancelButton.className = 'cancel-edit-button';
         cancelButton.textContent = 'Cancel';
+        cancelButton.style.backgroundColor = '#6c757d';
+        cancelButton.style.color = 'white';
+        cancelButton.style.border = 'none';
+        cancelButton.style.padding = '8px 16px';
+        cancelButton.style.borderRadius = '6px';
+        cancelButton.style.cursor = 'pointer';
+        cancelButton.style.fontSize = '13px';
+        cancelButton.style.fontWeight = '500';
+        cancelButton.style.transition = 'all 0.15s ease-in-out';
+        cancelButton.style.boxShadow = '0 2px 4px rgba(108, 117, 125, 0.2)';
+        cancelButton.style.flex = '1';
+        cancelButton.style.maxWidth = '80px';
+        
+        // Add hover effects
+        cancelButton.addEventListener('mouseenter', () => {
+            cancelButton.style.backgroundColor = '#5a6268';
+            cancelButton.style.transform = 'translateY(-1px)';
+            cancelButton.style.boxShadow = '0 4px 8px rgba(108, 117, 125, 0.3)';
+        });
+        
+        cancelButton.addEventListener('mouseleave', () => {
+            cancelButton.style.backgroundColor = '#6c757d';
+            cancelButton.style.transform = 'translateY(0)';
+            cancelButton.style.boxShadow = '0 2px 4px rgba(108, 117, 125, 0.2)';
+        });
+        
         cancelButton.onclick = () => cancelEdit(index, question);
         buttonsContainer.appendChild(cancelButton);
         
         editForm.appendChild(buttonsContainer);
+        
+        // Add helpful tip
+        const tipText = document.createElement('div');
+        tipText.style.fontSize = '12px';
+        tipText.style.color = '#6c757d';
+        tipText.style.marginTop = '10px';
+        tipText.style.padding = '8px 12px';
+        tipText.style.backgroundColor = '#e9ecef';
+        tipText.style.borderRadius = '4px';
+        tipText.style.fontStyle = 'italic';
+        tipText.innerHTML = '💡 <strong>Tip:</strong> Your answer will be saved to the team knowledge base to help future team members with similar questions.';
+        editForm.appendChild(tipText);
         
         // Store the original content and replace with edit form
         answerContainer.dataset.originalContent = answerContainer.innerHTML;
         answerContainer.innerHTML = '';
         answerContainer.appendChild(editForm);
         
-        // Focus the textarea
+        // Focus the textarea and position cursor at end
         textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     } catch (error) {
         log('Exception in addAnswer', 'error', error);
         window.OpsieApi.showNotification(`Error adding answer: ${error.message}`, 'error');
@@ -5766,27 +7356,79 @@ async function saveNewAnswer(index, question, newAnswer) {
             
             if (saveResult.success) {
                 question.answerId = saveResult.id;
-                log('Saved new answer to database', 'info', { id: saveResult.id });
                 
-                // Re-render the question
-                const questionElement = document.getElementById(`question-${index}`);
-                if (questionElement) {
-                    const parent = questionElement.parentNode;
-                    parent.removeChild(questionElement);
+                // Important: Set additional properties to ensure UI displays correctly
+                question.source = 'database';  // Mark as coming from database so edit button shows
+                question.matchType = 'exact';  // This is an exact match
+                
+                // Set updated timestamp
+                if (saveResult.updatedAt) {
+                    question.updatedAt = saveResult.updatedAt;
+                } else {
+                    question.updatedAt = new Date().toISOString();
+                }
+                
+                log('Saved new answer to database', 'info', { 
+                    id: saveResult.id,
+                    source: question.source, 
+                    matchType: question.matchType
+                });
+                
+                // IMPORTANT: Update the question in the global array
+                if (window.OpsieApi.extractQuestionsAndAnswers && 
+                    window.OpsieApi.extractQuestionsAndAnswers.questions) {
                     
-                    // Re-display all questions
-                    const questions = [];
-                    for (let i = 0; i < parent.childElementCount + 1; i++) {
-                        const qElement = document.getElementById(`question-${i}`);
-                        if (qElement) {
-                            const qData = window.OpsieApi.extractQuestionsAndAnswers.questions[i];
-                            if (qData) {
-                                questions.push(qData);
-                            }
-                        }
+                    // Find and update the question in the global array
+                    const globalQuestions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+                    const questionIndex = globalQuestions.findIndex(q => 
+                        q.text === question.text || 
+                        (q.id && q.id === question.id)
+                    );
+                    
+                    if (questionIndex >= 0) {
+                        globalQuestions[questionIndex] = question;
+                        log('Updated question in global array', 'info', {
+                            index: questionIndex,
+                            questionText: question.text,
+                            answerId: saveResult.id
+                        });
+                    } else {
+                        // If the question wasn't found, add it to the global array
+                        globalQuestions.push(question);
+                        log('Added question to global array', 'info', {
+                            questionText: question.text,
+                            answerId: saveResult.id
+                        });
                     }
                     
-                    displayQuestions(questions);
+                    log('Global questions array after update', 'debug', {
+                        length: globalQuestions.length,
+                        questions: globalQuestions.map(q => ({
+                            text: q.text,
+                            hasAnswer: !!q.answer,
+                            answerId: q.answerId,
+                            source: q.source,
+                            matchType: q.matchType
+                        }))
+                    });
+                    
+                    // Use the updated global array for display
+                    displayQuestions(globalQuestions);
+                } else {
+                    // If there's no global array, create one with this question
+                    if (!window.OpsieApi.extractQuestionsAndAnswers) {
+                        window.OpsieApi.extractQuestionsAndAnswers = {};
+                    }
+                    window.OpsieApi.extractQuestionsAndAnswers.questions = [question];
+                    log('Created new global questions array', 'info', {
+                        questionText: question.text,
+                        answerId: saveResult.id,
+                        source: question.source,
+                        matchType: question.matchType
+                    });
+                    
+                    // Display the single question
+                    displayQuestions([question]);
                 }
                 
                 // Show success notification
@@ -5802,6 +7444,889 @@ async function saveNewAnswer(index, question, newAnswer) {
     } catch (error) {
         log('Exception in saveNewAnswer', 'error', error);
         window.OpsieApi.showNotification(`Error saving answer: ${error.message}`, 'error');
+    }
+}
+    
+/**
+ * Helper function to format time ago from a date
+ * @param {Date} date - The date to calculate time from
+ * @returns {string} - Formatted time ago string
+ */
+function getTimeAgo(date) {
+    log('getTimeAgo called with date', 'info', {
+        date: date.toString(),
+        timestamp: date.getTime(),
+        now: new Date().toString()
+    });
+    
+    const now = new Date();
+    const seconds = Math.floor((now - date) / 1000);
+    
+    log('Time difference calculated', 'info', {
+        differenceMs: now - date,
+        differenceSeconds: seconds,
+        isNegative: seconds < 0
+    });
+    
+    // Time intervals in seconds
+    const intervals = {
+        year: 31536000,
+        month: 2592000,
+        week: 604800,
+        day: 86400,
+        hour: 3600,
+        minute: 60
+    };
+    
+    if (seconds < 60) {
+        log('Returning "just now"', 'info');
+        return "just now";
+    }
+    
+    for (const [unit, secondsInUnit] of Object.entries(intervals)) {
+        const interval = Math.floor(seconds / secondsInUnit);
+        
+        if (interval >= 1) {
+            const result = interval === 1 ? `1 ${unit} ago` : `${interval} ${unit}s ago`;
+            log(`Returning time ago result: ${result}`, 'info', {
+                unit: unit,
+                interval: interval,
+                calculation: `${seconds} / ${secondsInUnit} = ${interval}`
+            });
+            return result;
+        }
+    }
+    
+    log('No matching interval found, returning "just now"', 'info');
+    return "just now";
+}
+    
+/**
+ * Edit the answer for a matched question
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function editMatchedAnswer(index, question) {
+    try {
+        log('Editing matched answer', 'info', { index, question });
+        
+        // This is essentially the same as the regular editAnswer function
+        // but we're explicitly editing the answer for the matched question
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer) {
+            log('Answer container not found', 'error');
+            return;
+        }
+        
+        // Get the current answer text
+        const currentAnswerText = question.answer || '';
+        
+        // Create edit form
+        const editForm = document.createElement('div');
+        editForm.className = 'answer-edit-form';
+        
+        // Add a note to explain what's being edited
+        const editNote = document.createElement('div');
+        editNote.className = 'edit-note';
+        editNote.innerHTML = `<strong>Editing answer for matched question:</strong> "${question.originalQuestion}"`;
+        editNote.style.marginBottom = '10px';
+        editNote.style.padding = '8px';
+        editNote.style.backgroundColor = '#f0f4f8';
+        editNote.style.borderRadius = '4px';
+        editNote.style.fontSize = '0.9em';
+        editForm.appendChild(editNote);
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.className = 'answer-edit-textarea';
+        textarea.value = currentAnswerText;
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '120px';
+        textarea.style.padding = '8px';
+        textarea.style.marginBottom = '10px';
+        textarea.style.borderRadius = '4px';
+        textarea.style.border = '1px solid #ddd';
+        editForm.appendChild(textarea);
+        
+        // Create buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.className = 'edit-action-buttons';
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.gap = '8px';
+        
+        // Create save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'save-answer-button';
+        saveButton.textContent = 'Save Changes';
+        saveButton.style.backgroundColor = '#4a89dc';
+        saveButton.style.color = 'white';
+        saveButton.style.border = 'none';
+        saveButton.style.padding = '8px 16px';
+        saveButton.style.borderRadius = '4px';
+        saveButton.style.cursor = 'pointer';
+        saveButton.onclick = () => saveEditedAnswer(index, question, textarea.value);
+        buttonsContainer.appendChild(saveButton);
+        
+        // Create cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'cancel-edit-button';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.style.backgroundColor = '#f8f9fa';
+        cancelButton.style.color = '#333';
+        cancelButton.style.border = '1px solid #ddd';
+        cancelButton.style.padding = '8px 16px';
+        cancelButton.style.borderRadius = '4px';
+        cancelButton.style.cursor = 'pointer';
+        cancelButton.onclick = () => cancelEdit(index, question);
+        buttonsContainer.appendChild(cancelButton);
+        
+        editForm.appendChild(buttonsContainer);
+        
+        // Store the original content and replace with edit form
+        answerContainer.dataset.originalContent = answerContainer.innerHTML;
+        answerContainer.innerHTML = '';
+        answerContainer.appendChild(editForm);
+        
+        // Focus the textarea
+        textarea.focus();
+    } catch (error) {
+        log('Exception in editMatchedAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error editing matched answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Create a new submission for the extracted question
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function createNewSubmission(index, question) {
+    try {
+        log('Creating new submission for extracted question', 'info', { index, question });
+        
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer) {
+            log('Answer container not found', 'error');
+            return;
+        }
+        
+        // Get the current answer text as a starting point
+        const currentAnswerText = question.answer || '';
+        
+        // Create edit form
+        const editForm = document.createElement('div');
+        editForm.className = 'answer-edit-form';
+        
+        // Add a note to explain what's being created
+        const editNote = document.createElement('div');
+        editNote.className = 'edit-note';
+        editNote.innerHTML = `<strong>Creating new entry with question:</strong> "${question.text}"`;
+        editNote.style.marginBottom = '10px';
+        editNote.style.padding = '8px';
+        editNote.style.backgroundColor = '#e8f5e9';
+        editNote.style.borderRadius = '4px';
+        editNote.style.fontSize = '0.9em';
+        editForm.appendChild(editNote);
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.className = 'answer-edit-textarea';
+        textarea.value = currentAnswerText;
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '120px';
+        textarea.style.padding = '8px';
+        textarea.style.marginBottom = '10px';
+        textarea.style.borderRadius = '4px';
+        textarea.style.border = '1px solid #ddd';
+        editForm.appendChild(textarea);
+        
+        // Create buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.className = 'edit-action-buttons';
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.gap = '8px';
+        
+        // Create save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'save-answer-button';
+        saveButton.textContent = 'Save New Entry';
+        saveButton.style.backgroundColor = '#5cb85c';
+        saveButton.style.color = 'white';
+        saveButton.style.border = 'none';
+        saveButton.style.padding = '8px 16px';
+        saveButton.style.borderRadius = '4px';
+        saveButton.style.cursor = 'pointer';
+        saveButton.onclick = () => saveNewSubmission(index, question, textarea.value);
+        buttonsContainer.appendChild(saveButton);
+        
+        // Create cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'cancel-edit-button';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.style.backgroundColor = '#f8f9fa';
+        cancelButton.style.color = '#333';
+        cancelButton.style.border = '1px solid #ddd';
+        cancelButton.style.padding = '8px 16px';
+        cancelButton.style.borderRadius = '4px';
+        cancelButton.style.cursor = 'pointer';
+        cancelButton.onclick = () => cancelEdit(index, question);
+        buttonsContainer.appendChild(cancelButton);
+        
+        editForm.appendChild(buttonsContainer);
+        
+        // Store the original content and replace with edit form
+        answerContainer.dataset.originalContent = answerContainer.innerHTML;
+        answerContainer.innerHTML = '';
+        answerContainer.appendChild(editForm);
+        
+        // Focus the textarea
+        textarea.focus();
+    } catch (error) {
+        log('Exception in createNewSubmission', 'error', error);
+        window.OpsieApi.showNotification(`Error creating new submission: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Save a new submission as a new Q&A entry
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ * @param {string} newAnswer - The new answer text
+ */
+async function saveNewSubmission(index, question, newAnswer) {
+    try {
+        log('Saving new submission', 'info', { index, question, newAnswer });
+        
+        // DEBUG: Log the state of the global questions array before any changes
+        if (window.OpsieApi.extractQuestionsAndAnswers && window.OpsieApi.extractQuestionsAndAnswers.questions) {
+            log('BEFORE SAVE: Global questions array state', 'debug', {
+                length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+                questions: window.OpsieApi.extractQuestionsAndAnswers.questions.map(q => ({ text: q.text, hasAnswer: !!q.answer }))
+            });
+        } else {
+            log('BEFORE SAVE: Global questions array not found or empty', 'debug');
+        }
+        
+        // Validate input
+        if (!newAnswer || newAnswer.trim().length === 0) {
+            window.OpsieApi.showNotification('Please enter an answer before saving.', 'error');
+            return;
+        }
+        
+        // Get team ID
+        const teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID available for saving new submission', 'error');
+            window.OpsieApi.showNotification('Error: Team ID not found. Please reload the page.', 'error');
+            return;
+        }
+        
+        // Collect keywords from both the original question and the current question
+        const keywords = [
+            ...(question.keywords || []),
+            ...(question.searchKeywords || [])
+        ];
+        
+        // Create a new Q&A entry
+        try {
+            const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                question.text, // Use the extracted question text, not the matched one
+                newAnswer,
+                question.references || [], // Keep any references if available
+                teamId,
+                keywords,
+                true // Set as verified since it's a manual entry
+            );
+            
+            if (saveResult.success) {
+                log('Created new Q&A entry', 'info', { id: saveResult.id });
+                
+                // Update the question object to reflect the new state
+                // We're replacing the matched question with the new entry
+                question.answerId = saveResult.id;
+                question.answer = newAnswer;
+                question.verified = true;
+                question.matchType = 'exact'; // This is now an exact match
+                question.originalQuestion = null; // No original question anymore
+                question.source = 'database'; // Mark as coming from the database
+                
+                // Get the current timestamp for the update
+                if (saveResult.updatedAt) {
+                    question.updatedAt = saveResult.updatedAt;
+                } else {
+                    question.updatedAt = new Date().toISOString();
+                }
+
+                // Make sure to update the question in the global questions array
+                if (window.OpsieApi.extractQuestionsAndAnswers && 
+                    window.OpsieApi.extractQuestionsAndAnswers.questions) {
+                    // Find the question in the array and update it
+                    const globalQuestions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+                    const questionIndex = globalQuestions.findIndex(q => q.text === question.text);
+                    
+                    if (questionIndex >= 0) {
+                        globalQuestions[questionIndex] = question;
+                        log('Updated question in global questions array', 'info', { 
+                            questionIndex, 
+                            totalQuestions: globalQuestions.length,
+                            updatedQuestion: { 
+                                text: question.text, 
+                                answer: question.answer ? question.answer.substring(0, 50) + '...' : 'No answer', 
+                                answerId: question.answerId
+                            }
+                        });
+                    } else {
+                        // If not found, add it to the array
+                        globalQuestions.push(question);
+                        log('Added question to global questions array', 'info', { 
+                            newLength: globalQuestions.length,
+                            addedQuestion: { 
+                                text: question.text, 
+                                answer: question.answer ? question.answer.substring(0, 50) + '...' : 'No answer',
+                                answerId: question.answerId
+                            }
+                        });
+                    }
+
+                    // DEBUG: Log the updated global questions array
+                    log('AFTER UPDATE: Global questions array state', 'debug', {
+                        length: globalQuestions.length,
+                        questions: globalQuestions.map(q => ({ 
+                            text: q.text, 
+                            hasAnswer: !!q.answer,
+                            answerId: q.answerId
+                        }))
+                    });
+                    
+                    // IMPORTANT: Use the global questions array for display
+                    // This ensures consistency with other functions
+                    log('Using global questions array for redisplay', 'info', {
+                        questionCount: globalQuestions.length
+                    });
+                    displayQuestions(globalQuestions);
+                } else {
+                    // Initialize the global questions array if it doesn't exist
+                    if (!window.OpsieApi.extractQuestionsAndAnswers) {
+                        window.OpsieApi.extractQuestionsAndAnswers = {};
+                    }
+                    window.OpsieApi.extractQuestionsAndAnswers.questions = [question];
+                    log('Created global questions array with new question', 'info', {
+                        question: { 
+                            text: question.text, 
+                            answer: question.answer ? question.answer.substring(0, 50) + '...' : 'No answer',
+                            answerId: question.answerId
+                        }
+                    });
+
+                    // DEBUG: Log the newly created global questions array
+                    log('AFTER CREATE: Global questions array state', 'debug', {
+                        length: window.OpsieApi.extractQuestionsAndAnswers.questions.length,
+                        questions: window.OpsieApi.extractQuestionsAndAnswers.questions.map(q => ({ 
+                            text: q.text, 
+                            hasAnswer: !!q.answer,
+                            answerId: q.answerId
+                        }))
+                    });
+                    
+                    // Display the single question
+                    displayQuestions([question]);
+                }
+                
+                window.OpsieApi.showNotification('New Q&A entry created successfully!', 'success');
+            } else {
+                log('Failed to create new Q&A entry', 'error', saveResult.error);
+                window.OpsieApi.showNotification(`Error creating new entry: ${saveResult.error}`, 'error');
+                
+                // Restore the original content
+                cancelEdit(index, question);
+            }
+        } catch (saveError) {
+            log('Exception saving new Q&A entry', 'error', saveError);
+            window.OpsieApi.showNotification(`Error creating new entry: ${saveError.message}`, 'error');
+            
+            // Restore the original content
+            cancelEdit(index, question);
+        }
+    } catch (error) {
+        log('Exception in saveNewSubmission', 'error', error);
+        window.OpsieApi.showNotification(`Error saving new submission: ${error.message}`, 'error');
+    }
+}
+    
+/**
+ * Edit an answer found through email search
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ */
+function editSearchAnswer(index, question) {
+    try {
+        log('Editing search answer', 'info', { index, question });
+        
+        const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+        if (!answerContainer) {
+            log('Answer container not found', 'error');
+            return;
+        }
+        
+        // Get the current answer text
+        const currentAnswerText = question.answer || '';
+        
+        // Create edit form
+        const editForm = document.createElement('div');
+        editForm.className = 'answer-edit-form';
+        
+        // Add a note to explain what's being edited
+        const editNote = document.createElement('div');
+        editNote.className = 'edit-note';
+        editNote.innerHTML = '<strong>Editing answer from email search:</strong> When you save, this will be added to your knowledge base.';
+        editNote.style.marginBottom = '10px';
+        editNote.style.padding = '8px';
+        editNote.style.backgroundColor = '#e8f5e9';
+        editNote.style.borderRadius = '4px';
+        editNote.style.fontSize = '0.9em';
+        editForm.appendChild(editNote);
+        
+        // Create textarea for editing
+        const textarea = document.createElement('textarea');
+        textarea.className = 'answer-edit-textarea';
+        textarea.value = currentAnswerText;
+        textarea.style.width = '100%';
+        textarea.style.minHeight = '120px';
+        textarea.style.padding = '8px';
+        textarea.style.marginBottom = '10px';
+        textarea.style.borderRadius = '4px';
+        textarea.style.border = '1px solid #ddd';
+        editForm.appendChild(textarea);
+        
+        // Create buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.className = 'edit-action-buttons';
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.gap = '8px';
+        
+        // Create save button
+        const saveButton = document.createElement('button');
+        saveButton.className = 'save-answer-button';
+        saveButton.textContent = 'Save to Knowledge Base';
+        saveButton.style.backgroundColor = '#5cb85c';
+        saveButton.style.color = 'white';
+        saveButton.style.border = 'none';
+        saveButton.style.padding = '8px 16px';
+        saveButton.style.borderRadius = '4px';
+        saveButton.style.cursor = 'pointer';
+        saveButton.onclick = () => saveSearchToDatabase(index, question);
+        buttonsContainer.appendChild(saveButton);
+        
+        // Create cancel button
+        const cancelButton = document.createElement('button');
+        cancelButton.className = 'cancel-edit-button';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.style.backgroundColor = '#f8f9fa';
+        cancelButton.style.color = '#333';
+        cancelButton.style.border = '1px solid #ddd';
+        cancelButton.style.padding = '8px 16px';
+        cancelButton.style.borderRadius = '4px';
+        cancelButton.style.cursor = 'pointer';
+        cancelButton.onclick = () => cancelEdit(index, question);
+        buttonsContainer.appendChild(cancelButton);
+        
+        editForm.appendChild(buttonsContainer);
+        
+        // Store the original content and replace with edit form
+        answerContainer.dataset.originalContent = answerContainer.innerHTML;
+        answerContainer.innerHTML = '';
+        answerContainer.appendChild(editForm);
+        
+        // Focus the textarea
+        textarea.focus();
+    } catch (error) {
+        log('Exception in editSearchAnswer', 'error', error);
+        window.OpsieApi.showNotification(`Error editing search answer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Save a search answer to the database
+ * @param {number} index - Index of the question
+ * @param {Object} question - Question object
+ * @param {string} [newAnswer] - Optional new answer text, if not provided uses the existing answer
+ */
+async function saveSearchToDatabase(index, question, newAnswer) {
+    try {
+        // Use either the provided newAnswer or the existing answer
+        const answerText = newAnswer || question.answer;
+        
+        log('Saving search answer to database', 'info', { 
+            index, 
+            question, 
+            answerText: answerText ? answerText.substring(0, 50) + '...' : 'No answer'
+        });
+        
+        // Validate input
+        if (!answerText || answerText.trim().length === 0) {
+            window.OpsieApi.showNotification('Cannot save empty answer to database.', 'error');
+            return;
+        }
+        
+        // Get team ID
+        const teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID available for saving to database', 'error');
+            window.OpsieApi.showNotification('Team information is not available. Could not save answer.', 'error');
+            return;
+        }
+        
+        // Gather keywords from the question if available
+        const keywords = [
+            ...(question.keywords || []),
+            ...(question.searchKeywords || [])
+        ];
+        
+        // Get references from the search result
+        const references = question.references || [];
+        
+        // Save to database
+        try {
+            const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                question.text,
+                answerText,
+                references,
+                teamId,
+                keywords,
+                true  // Mark as verified since it's manually saved
+            );
+            
+            if (saveResult.success) {
+                // Update question properties
+                question.answerId = saveResult.id;
+                question.source = 'database';  // Now it's from the database
+                question.matchType = 'exact';  // It's an exact match
+                question.verified = true;      // It's verified
+                
+                // Update answer if a new one was provided
+                if (newAnswer) {
+                    question.answer = newAnswer;
+                }
+                
+                // Set updated timestamp
+                if (saveResult.updatedAt) {
+                    question.updatedAt = saveResult.updatedAt;
+                } else {
+                    question.updatedAt = new Date().toISOString();
+                }
+                
+                log('Saved search answer to database', 'info', { 
+                    id: saveResult.id,
+                    source: question.source, 
+                    matchType: question.matchType
+                });
+                
+                // Update the global questions array
+                if (window.OpsieApi.extractQuestionsAndAnswers && 
+                    window.OpsieApi.extractQuestionsAndAnswers.questions) {
+                    
+                    const globalQuestions = window.OpsieApi.extractQuestionsAndAnswers.questions;
+                    const questionIndex = globalQuestions.findIndex(q => 
+                        q.text === question.text || 
+                        (q.id && q.id === question.id)
+                    );
+                    
+                    if (questionIndex >= 0) {
+                        globalQuestions[questionIndex] = question;
+                        log('Updated question in global array', 'info', {
+                            index: questionIndex,
+                            questionText: question.text,
+                            answerId: saveResult.id
+                        });
+                    } else {
+                        globalQuestions.push(question);
+                        log('Added question to global array', 'info', {
+                            questionText: question.text,
+                            answerId: saveResult.id
+                        });
+                    }
+                    
+                    // Redisplay all questions
+                    displayQuestions(globalQuestions);
+                } else {
+                    // If no global array exists, create one
+                    if (!window.OpsieApi.extractQuestionsAndAnswers) {
+                        window.OpsieApi.extractQuestionsAndAnswers = {};
+                    }
+                    window.OpsieApi.extractQuestionsAndAnswers.questions = [question];
+                    
+                    // Redisplay the single question
+                    displayQuestions([question]);
+                }
+                
+                // If we were in edit mode, make sure to cancel it
+                if (newAnswer) {
+                    const answerContainer = document.querySelector(`#question-${index} .answer-container`);
+                    if (answerContainer && answerContainer.dataset.originalContent) {
+                        // We were in edit mode, but displayQuestions has been called, so no need to cancel
+                        delete answerContainer.dataset.originalContent;
+                    }
+                }
+                
+                window.OpsieApi.showNotification('Answer saved to knowledge base successfully!', 'success');
+            } else {
+                log('Error saving to database', 'error', saveResult.error);
+                window.OpsieApi.showNotification(`Error saving to database: ${saveResult.error}`, 'error');
+                
+                // If we were in edit mode, cancel it
+                if (newAnswer) {
+                    cancelEdit(index, question);
+                }
+            }
+        } catch (saveError) {
+            log('Exception saving to database', 'error', saveError);
+            window.OpsieApi.showNotification(`Error saving to database: ${saveError.message}`, 'error');
+            
+            // If we were in edit mode, cancel it
+            if (newAnswer) {
+                cancelEdit(index, question);
+            }
+        }
+    } catch (error) {
+        log('Exception in saveSearchToDatabase', 'error', error);
+        window.OpsieApi.showNotification(`Error saving to database: ${error.message}`, 'error');
+    }
+}
+    
+// Document upload handling
+function initializeDocumentUpload() {
+    const uploadButton = document.getElementById('upload-document-button');
+    const fileInput = document.getElementById('knowledge-doc-input');
+    const uploadStatus = document.getElementById('document-upload-status');
+
+    if (uploadButton && fileInput) {
+        uploadButton.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            try {
+                // Show loading state
+                uploadStatus.style.display = 'flex';
+                uploadButton.disabled = true;
+
+                // Get current team ID
+                const teamId = localStorage.getItem('currentTeamId');
+                if (!teamId) {
+                    throw new Error('No team ID found. Please ensure you are part of a team.');
+                }
+
+                // Process the document
+                const result = await window.OpsieApi.processDocumentForQA(file, teamId);
+
+                if (result.success) {
+                    window.OpsieApi.showNotification(result.message, 'success');
+                } else {
+                    throw new Error(result.error);
+                }
+            } catch (error) {
+                window.OpsieApi.showNotification(error.message, 'error');
+            } finally {
+                // Reset the input and UI state
+                fileInput.value = '';
+                uploadStatus.style.display = 'none';
+                uploadButton.disabled = false;
+            }
+        });
+    }
+}
+
+// Add to the existing Office.onReady function
+Office.onReady((info) => {
+    // ... existing code ...
+
+    // Initialize document upload functionality
+    initializeDocumentUpload();
+});
+    
+/**
+ * Handle manual question submission
+ */
+async function handleManualQuestionSubmission() {
+    try {
+        log('Manual question submission started', 'info');
+        
+        // Get the question text from the input
+        const questionInput = document.getElementById('manual-question-input');
+        if (!questionInput) {
+            log('Manual question input element not found', 'error');
+            window.OpsieApi.showNotification('Question input not found.', 'error');
+            return;
+        }
+        
+        const questionText = questionInput.value.trim();
+        if (!questionText) {
+            log('No question text provided', 'warning');
+            window.OpsieApi.showNotification('Please enter a question.', 'warning');
+            return;
+        }
+        
+        // Check if we have team ID for Q&A operations
+        const teamId = localStorage.getItem('currentTeamId');
+        if (!teamId) {
+            log('No team ID available for manual Q&A', 'warning');
+            window.OpsieApi.showNotification('Team information is not available. Please ensure you are logged in.', 'warning');
+            return;
+        }
+        
+        // Show the QA container if it's not visible
+        const qaContainer = document.getElementById('qa-container');
+        if (qaContainer) {
+            qaContainer.style.display = 'block';
+        }
+        
+        // Disable the submit button and show loading state
+        const submitButton = document.getElementById('submit-manual-question');
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = 'Searching...';
+        }
+        
+        // Show loading spinner
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'block';
+        }
+        
+        // Hide no questions message
+        const noQuestionsMsg = document.getElementById('no-questions-message');
+        if (noQuestionsMsg) {
+            noQuestionsMsg.style.display = 'none';
+        }
+        
+        log('Processing manual question', 'info', { question: questionText });
+        
+        // Create a question object similar to extracted questions
+        const manualQuestion = {
+            text: questionText,
+            confidence: 1.0, // High confidence since it's user-provided
+            isManual: true,
+            answer: null,
+            references: [],
+            keywords: []
+        };
+        
+        // Try to find existing answer first
+        const existingAnswer = await window.OpsieApi.findExistingAnswer(questionText, teamId);
+        
+        log('Existing answer search result', 'info', existingAnswer);
+        
+        if (existingAnswer.found && existingAnswer.answer) {
+            log('Found existing answer for manual question', 'info', {
+                matchType: existingAnswer.matchType,
+                similarity: existingAnswer.similarityScore,
+                verified: existingAnswer.verified
+            });
+            manualQuestion.answer = existingAnswer.answer;
+            manualQuestion.references = existingAnswer.references || [];
+            manualQuestion.keywords = existingAnswer.keywords || [];
+            manualQuestion.answerId = existingAnswer.id;
+            manualQuestion.isVerified = existingAnswer.verified;
+            manualQuestion.confidenceScore = existingAnswer.similarityScore || existingAnswer.confidenceScore;
+            manualQuestion.sourceFilename = existingAnswer.sourceFilename;
+            manualQuestion.matchType = existingAnswer.matchType;
+            manualQuestion.originalQuestion = existingAnswer.originalQuestion;
+            manualQuestion.similarityScore = existingAnswer.similarityScore;
+            manualQuestion.updatedAt = existingAnswer.updatedAt;
+            manualQuestion.verified = existingAnswer.verified;
+            manualQuestion.source = 'database'; // This ensures it gets the same display treatment
+        } else {
+            // Search for answer in team emails
+            log('Searching for answer to manual question', 'info');
+            const apiKey = await window.OpsieApi.getOpenAIApiKey();
+            
+            if (!apiKey) {
+                log('No OpenAI API key available for manual question search', 'error');
+                window.OpsieApi.showNotification('OpenAI API key is required. Please set it in Settings.', 'error');
+                return;
+            }
+            
+            const searchResult = await window.OpsieApi.searchForAnswer(questionText, teamId, apiKey);
+            
+            if (searchResult.success) {
+                log('Found answer for manual question', 'info');
+                manualQuestion.answer = searchResult.answer;
+                manualQuestion.references = searchResult.references || [];
+                manualQuestion.keywords = searchResult.keywords || [];
+                manualQuestion.confidenceScore = searchResult.confidence;
+                
+                // Save the Q&A to database
+                try {
+                    const saveResult = await window.OpsieApi.saveQuestionAnswer(
+                        questionText,
+                        searchResult.answer,
+                        searchResult.references || [],
+                        teamId,
+                        searchResult.keywords || [],
+                        false, // Not user verified initially
+                        searchResult.confidence
+                    );
+                    
+                    if (saveResult.success) {
+                        manualQuestion.answerId = saveResult.id;
+                        log('Saved manual Q&A to database', 'info', { id: saveResult.id });
+                    } else {
+                        log('Failed to save manual Q&A to database', 'warning', saveResult.error);
+                    }
+                } catch (saveError) {
+                    log('Error saving manual Q&A to database', 'error', saveError);
+                }
+            } else {
+                log('No answer found for manual question', 'info');
+                manualQuestion.answer = null;
+                manualQuestion.keywords = searchResult.keywords || [];
+            }
+        }
+        
+        // Update or create the global questions array
+        if (!window.OpsieApi.extractQuestionsAndAnswers) {
+            window.OpsieApi.extractQuestionsAndAnswers = {};
+        }
+        if (!window.OpsieApi.extractQuestionsAndAnswers.questions) {
+            window.OpsieApi.extractQuestionsAndAnswers.questions = [];
+        }
+        
+        // Add the manual question to the beginning of the array
+        window.OpsieApi.extractQuestionsAndAnswers.questions.unshift(manualQuestion);
+        
+        // Display all questions (including the new manual one)
+        displayQuestions(window.OpsieApi.extractQuestionsAndAnswers.questions);
+        
+        // Clear the input field
+        questionInput.value = '';
+        
+        // Show success notification
+        if (manualQuestion.answer) {
+            window.OpsieApi.showNotification('Found an answer to your question!', 'success');
+        } else {
+            window.OpsieApi.showNotification('Question added, but no answer was found in the knowledge base.', 'info');
+        }
+        
+        log('Manual question submission completed', 'info');
+        
+    } catch (error) {
+        log('Exception in handleManualQuestionSubmission', 'error', error);
+        window.OpsieApi.showNotification(`Error processing question: ${error.message}`, 'error');
+    } finally {
+        // Reset UI state
+        const submitButton = document.getElementById('submit-manual-question');
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.textContent = 'Get Answer';
+        }
+        
+        const loadingSpinner = document.getElementById('qa-loading-spinner');
+        if (loadingSpinner) {
+            loadingSpinner.style.display = 'none';
+        }
     }
 }
     
