@@ -20,7 +20,7 @@
   <DisplayName DefaultValue="Opsie Email Assistant" />
   <Description DefaultValue="AI-powered email assistant for better email management and responses." />
   <IconUrl DefaultValue="https://philles99.github.io/Opsie-/assets/icon-64.png" />
-  <HighResolutionIconUrl DefaultValue="https://philles99.github.io/Opsie-/src/taskpane.html" />
+  <HighResolutionIconUrl DefaultValue="https://philles99.github.io/Opsie-/assets/icon-128.png" />
 
   <SupportUrl DefaultValue="https://opsie.io/support" />
 
