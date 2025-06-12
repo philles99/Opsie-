@@ -3606,7 +3606,7 @@ async function loadTaskpane() {
                 if (settingsButton) {
                     settingsButton.style.display = 'block';
                     log('Shown settings button - user has team', 'info');
-                }
+            }
             
             // Make sure all main UI sections are visible
             showMainUISections();

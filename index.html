@@ -3,74 +3,674 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Opsie Email Assistant</title>
+    <title>Opsie - AI-Powered Email Assistant</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            padding: 1rem 0;
+        }
+
+        .nav {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 2rem;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+        }
+
+        .logo-text {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .btn-primary {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+
+        .btn-secondary:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        /* Hero Section */
+        .hero {
             min-height: 100vh;
             display: flex;
-            justify-content: center;
             align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-        }
-        .container {
             text-align: center;
-            padding: 2rem;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            padding: 0 2rem;
         }
-        h1 {
-            font-size: 3rem;
-            margin-bottom: 1rem;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+
+        .hero-content {
+            max-width: 800px;
         }
-        p {
-            font-size: 1.2rem;
-            margin-bottom: 2rem;
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            margin-bottom: 2.5rem;
             opacity: 0.9;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
         }
-        .btn {
-            display: inline-block;
-            padding: 12px 30px;
-            background: rgba(255, 255, 255, 0.2);
+
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-hero {
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+        }
+
+        .btn-white {
+            background: white;
+            color: #667eea;
+        }
+
+        .btn-white:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn-outline {
+            background: transparent;
             color: white;
-            text-decoration: none;
-            border-radius: 50px;
-            border: 2px solid rgba(255, 255, 255, 0.3);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+        }
+
+        .btn-outline:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: white;
+        }
+
+        /* Features Section */
+        .features {
+            padding: 6rem 2rem;
+            background: #f8fafc;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-header h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 1rem;
+        }
+
+        .section-header p {
+            font-size: 1.2rem;
+            color: #64748b;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 3rem;
+            margin-top: 4rem;
+        }
+
+        .feature-card {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
             transition: all 0.3s ease;
-            font-weight: 600;
-            margin: 0 10px;
+            border: 1px solid rgba(0, 0, 0, 0.05);
         }
-        .btn:hover {
-            background: rgba(255, 255, 255, 0.3);
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
         }
-        .logo {
-            width: 100px;
-            height: 100px;
-            margin: 0 auto 2rem;
-            background: rgba(255, 255, 255, 0.2);
+
+        .feature-icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card p {
+            color: #64748b;
+            line-height: 1.7;
+        }
+
+        /* Security Section */
+        .security {
+            padding: 6rem 2rem;
+            background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+            color: white;
+        }
+
+        .security .section-header h2 {
+            color: white;
+        }
+
+        .security .section-header p {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .security-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+            margin-top: 4rem;
+        }
+
+        .security-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 2.5rem;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+
+        .security-card:hover {
+            transform: translateY(-5px);
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .security-icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            color: white;
+        }
+
+        .security-card h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: white;
+            margin-bottom: 1rem;
+        }
+
+        .security-card p {
+            color: rgba(255, 255, 255, 0.8);
+            line-height: 1.7;
+        }
+
+        /* How It Works Section */
+        .how-it-works {
+            padding: 6rem 2rem;
+            background: white;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 3rem;
+            margin-top: 4rem;
+        }
+
+        .step {
+            text-align: center;
+            position: relative;
+        }
+
+        .step-number {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0 auto 1.5rem;
+        }
+
+        .step h3 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 1rem;
+        }
+
+        .step p {
+            color: #64748b;
+            line-height: 1.7;
+        }
+
+        /* Benefits Section */
+        .benefits {
+            padding: 6rem 2rem;
+            background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+            color: white;
+        }
+
+        .benefits-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin-top: 4rem;
+        }
+
+        .benefit {
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .benefit-icon {
             font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.9;
+        }
+
+        .benefit h3 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .benefit p {
+            opacity: 0.8;
+            line-height: 1.6;
+        }
+
+        /* CTA Section */
+        .cta {
+            padding: 6rem 2rem;
+            background: #f8fafc;
+            text-align: center;
+        }
+
+        .cta h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 1rem;
+        }
+
+        .cta p {
+            font-size: 1.2rem;
+            color: #64748b;
+            margin-bottom: 2.5rem;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* Footer */
+        .footer {
+            background: #1a202c;
+            color: white;
+            padding: 3rem 2rem 2rem;
+            text-align: center;
+        }
+
+        .footer p {
+            opacity: 0.7;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .nav {
+                padding: 0 1rem;
+            }
+
+            .nav-buttons {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .hero-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+                gap: 2rem;
+            }
+
+            .steps {
+                grid-template-columns: 1fr;
+                gap: 2rem;
+            }
+
+            .benefits-grid {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+
+            .security-grid {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+        }
+
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Animation */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .animate-on-scroll {
+            animation: fadeInUp 0.8s ease-out;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="logo">📧</div>
-        <h1>Opsie Email Assistant</h1>
-        <p>AI-powered email assistant for better email management and responses</p>
-        <a href="outlook-addin/src/taskpane.html" class="btn">View Taskpane</a>
-        <a href="outlook-addin/manifest.xml" class="btn" download="manifest.xml">Download Manifest</a>
-    </div>
+    <!-- Header -->
+    <header class="header">
+        <nav class="nav">
+            <div class="logo-container">
+                <img src="logos/logo1.png" alt="Opsie Logo" class="logo">
+                <span class="logo-text">Opsie</span>
+            </div>
+            <div class="nav-buttons">
+                <a href="outlook-addin/src/taskpane.html" class="btn btn-secondary">View Taskpane</a>
+                <a href="outlook-addin/manifest.xml" class="btn btn-primary" download="manifest.xml">Download Manifest</a>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-content">
+            <h1>Built for teams to move at the speed of light</h1>
+            <p>All the features you need for intelligent email management. Fast, minimalistic, and fully powered by AI. There is no smarter email assistant than Opsie.</p>
+            <div class="hero-buttons">
+                <a href="outlook-addin/src/taskpane.html" class="btn btn-white btn-hero">Get Started</a>
+                <a href="#features" class="btn btn-outline btn-hero">Learn More</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>Nothing slips through the cracks</h2>
+                <p>Opsie automatically captures insights from all your email interactions and stores the knowledge in one place. Be at ease knowing you have intelligent assistance at all times.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">Q</div>
+                    <h3>Questions & Answers</h3>
+                    <p>Automatically extract questions from emails and get intelligent AI-powered answers based on your team's knowledge base. Ask manual questions and search through your team's knowledge base for instant insights. No more manual research.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">N</div>
+                    <h3>Team Collaboration Notes</h3>
+                    <p>Add collaborative notes to emails that your entire team can see. Categorize notes by action required, pending, or information to keep everyone aligned.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">S</div>
+                    <h3>AI Email Summaries</h3>
+                    <p>Generate intelligent summaries of your emails with urgency scoring. Get the key points instantly and understand what requires immediate attention.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">R</div>
+                    <h3>Smart Reply Generation</h3>
+                    <p>Create contextual email replies with customizable tone, length, and language options. Add specific context and let AI craft the perfect response.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">H</div>
+                    <h3>Contact History & Search</h3>
+                    <p>Search through all past conversations with any contact. Get comprehensive contact summaries and find specific information from your email history.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">T</div>
+                    <h3>Team Management</h3>
+                    <p>Create or join teams with secure access codes. Manage team members, handle join requests, and collaborate seamlessly across your organization.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Security Section -->
+    <section class="security">
+        <div class="container">
+            <div class="section-header">
+                <h2>Enterprise-Grade Security</h2>
+                <p>Your data security is our top priority. Opsie implements multiple layers of protection to ensure your sensitive email data remains secure and compliant.</p>
+            </div>
+            <div class="security-grid">
+                <div class="security-card">
+                    <div class="security-icon">RLS</div>
+                    <h3>Row Level Security</h3>
+                    <p>Advanced database-level security ensures users can only access data belonging to their team. Every query is automatically filtered by team membership with zero chance of data leakage.</p>
+                </div>
+                <div class="security-card">
+                    <div class="security-icon">AUTH</div>
+                    <h3>Secure Authentication</h3>
+                    <p>Multi-factor authentication with secure session management. All authentication tokens are encrypted and automatically expire to prevent unauthorized access.</p>
+                </div>
+                <div class="security-card">
+                    <div class="security-icon">ENCRYPT</div>
+                    <h3>End-to-End Encryption</h3>
+                    <p>All data is encrypted in transit and at rest using industry-standard AES-256 encryption. Your email content and team data are protected at every step.</p>
+                </div>
+                <div class="security-card">
+                    <div class="security-icon">AUDIT</div>
+                    <h3>Audit Logging</h3>
+                    <p>Comprehensive audit trails track all user actions and data access. Full compliance with enterprise security requirements and regulatory standards.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section class="how-it-works">
+        <div class="container">
+            <div class="section-header">
+                <h2>Up to date in seconds</h2>
+                <p>Get up to date and prepare for meetings in minutes, with narratives that tell you the actual story. Not which columns were updated, but what the customer actually said.</p>
+            </div>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Install & Join Team</h3>
+                    <p>Download the Outlook add-in, create an account, and join or create your team. Setup takes less than 2 minutes with secure team access codes.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>Extract & Collaborate</h3>
+                    <p>Open any email and extract questions, generate summaries, add team notes, and search contact history - all within your Outlook interface.</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Generate & Reply</h3>
+                    <p>Create intelligent replies with customizable tone and context, mark emails as handled, and share insights with your team for seamless collaboration.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Benefits Section -->
+    <section class="benefits">
+        <div class="container">
+            <div class="section-header">
+                <h2>Move as fast as possible</h2>
+                <p>We've built Opsie to enable you to put all your focus on talking to customers - not setting up workflows or doing manual updates. Opsie is the fastest, most minimalistic and opinionated email assistant, by design.</p>
+            </div>
+            <div class="benefits-grid">
+                <div class="benefit">
+                    <div class="benefit-icon">3+</div>
+                    <h3>Save 3+ Hours Daily</h3>
+                    <p>Reduce email processing time by up to 80% with intelligent Q&A extraction, automated summaries, and smart reply generation.</p>
+                </div>
+                <div class="benefit">
+                    <div class="benefit-icon">40%</div>
+                    <h3>Increase Response Quality</h3>
+                    <p>Improve email response quality by 40% with AI-powered context awareness and team knowledge sharing.</p>
+                </div>
+                <div class="benefit">
+                    <div class="benefit-icon">0</div>
+                    <h3>Zero Missed Context</h3>
+                    <p>Never miss important context with collaborative notes, contact history search, and urgency scoring.</p>
+                </div>
+                <div class="benefit">
+                    <div class="benefit-icon">10x</div>
+                    <h3>10x Team Collaboration</h3>
+                    <p>Scale your team's email efficiency with shared notes, team management, and collaborative knowledge base.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta">
+        <div class="container">
+            <h2>All context in one place. Minus all the effort.</h2>
+            <p>Join thousands of professionals who have transformed their email workflow with Opsie's intelligent assistance.</p>
+            <div class="hero-buttons">
+                <a href="outlook-addin/src/taskpane.html" class="btn btn-primary btn-hero">Start Free Trial</a>
+                <a href="outlook-addin/manifest.xml" class="btn btn-secondary btn-hero" download="manifest.xml">Download Now</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 Opsie. All rights reserved. Built with intelligence, designed for productivity.</p>
+        </div>
+    </footer>
+
+    <script>
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        // Add scroll effect to header
+        window.addEventListener('scroll', () => {
+            const header = document.querySelector('.header');
+            if (window.scrollY > 100) {
+                header.style.background = 'rgba(255, 255, 255, 0.98)';
+            } else {
+                header.style.background = 'rgba(255, 255, 255, 0.95)';
+            }
+        });
+    </script>
 </body>
 </html> 
