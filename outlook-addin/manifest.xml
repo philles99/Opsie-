@@ -19,8 +19,8 @@
   <!-- The display name of your add-in. Used in the Store and Office UI. -->
   <DisplayName DefaultValue="Opsie Email Assistant" />
   <Description DefaultValue="AI-powered email assistant for better email management and responses." />
-  <IconUrl DefaultValue="https://philles99.github.io/Opsie-/assets/icon-64.png" />
-  <HighResolutionIconUrl DefaultValue="https://philles99.github.io/Opsie-/assets/icon-128.png" />
+  <IconUrl DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-64.png" />
+  <HighResolutionIconUrl DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-128.png" />
 
   <SupportUrl DefaultValue="https://opsie.io/support" />
 
@@ -48,7 +48,7 @@
   <FormSettings>
     <Form xsi:type="ItemRead">
       <DesktopSettings>
-        <SourceLocation DefaultValue="https://philles99.github.io/Opsie-/src/taskpane.html"/>
+        <SourceLocation DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/src/taskpane.html"/>
         <RequestedHeight>450</RequestedHeight>
       </DesktopSettings>
     </Form>
@@ -99,9 +99,9 @@
     <!-- Resources for your add-in -->
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://philles99.github.io/Opsie-/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://philles99.github.io/Opsie-/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://philles99.github.io/Opsie-/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="https://philles99.github.io/Opsie-/src/commands.html"/>
