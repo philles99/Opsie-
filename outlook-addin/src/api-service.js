@@ -46,6 +46,10 @@ async function apiRequest(endpoint, method = 'GET', data = null) {
         
         log('Making API request to:', 'info', { url, method });
         
+        // Create abort controller for timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
+        
         const options = {
             method: method,
             headers: {
@@ -53,8 +57,8 @@ async function apiRequest(endpoint, method = 'GET', data = null) {
                 'apikey': SUPABASE_ANON_KEY,
                 'Authorization': token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_KEY}`
             },
-            // Set timeout
-            signal: AbortSignal.timeout(API_TIMEOUT)
+            // Set timeout signal
+            signal: controller.signal
         };
 
         // Add request body for POST, PUT, PATCH requests
@@ -72,6 +76,9 @@ async function apiRequest(endpoint, method = 'GET', data = null) {
         });
 
         const response = await fetch(url, options);
+        
+        // Clear the timeout since the request completed
+        clearTimeout(timeoutId);
         
         // Log detailed response information for debugging
         log('API response received:', 'info', {
