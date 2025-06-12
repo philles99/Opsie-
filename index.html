@@ -24,7 +24,7 @@
             top: 0;
             left: 0;
             right: 0;
-            background: rgba(255, 255, 255, 0.95);
+            background: rgba(252, 250, 249, 0.95);
             backdrop-filter: blur(20px);
             border-bottom: 1px solid rgba(0, 0, 0, 0.1);
             z-index: 1000;
@@ -43,19 +43,11 @@
         .logo-container {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
         }
 
         .logo {
-            width: 40px;
             height: 40px;
-            border-radius: 8px;
-        }
-
-        .logo-text {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #667eea;
+            width: auto;
         }
 
         .nav-buttons {
@@ -349,6 +341,14 @@
             color: white;
         }
 
+        .benefits .section-header h2 {
+            color: white;
+        }
+
+        .benefits .section-header p {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
         .benefits-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -478,7 +478,6 @@
         <nav class="nav">
             <div class="logo-container">
                 <img src="logos/logo1.png" alt="Opsie Logo" class="logo">
-                <span class="logo-text">Opsie</span>
             </div>
             <div class="nav-buttons">
                 <a href="outlook-addin/src/taskpane.html" class="btn btn-secondary">View Taskpane</a>
@@ -666,9 +665,9 @@
         window.addEventListener('scroll', () => {
             const header = document.querySelector('.header');
             if (window.scrollY > 100) {
-                header.style.background = 'rgba(255, 255, 255, 0.98)';
+                header.style.background = 'rgba(252, 250, 249, 0.98)';
             } else {
-                header.style.background = 'rgba(255, 255, 255, 0.95)';
+                header.style.background = 'rgba(252, 250, 249, 0.95)';
             }
         });
     </script>
