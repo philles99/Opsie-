@@ -2652,6 +2652,7 @@ async function getUserInfo(forceRefresh = false) {
         window.OpsieApi.STORAGE_KEY_REFRESH = STORAGE_KEY_REFRESH;
         
         // Add main API functions to the global object
+        window.OpsieApi.apiRequest = apiRequest;
   window.OpsieApi.generateEmailSummary = generateEmailSummary;
   window.OpsieApi.generateReplySuggestion = generateReplySuggestion;
   window.OpsieApi.saveEmail = saveEmail;

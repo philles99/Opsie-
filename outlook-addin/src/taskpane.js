@@ -1774,7 +1774,7 @@ function displayExistingSummary(summaryText, urgencyScore) {
 }
 
 // Update the UI to show an email has been saved
-function updateSavedStatus(messageData) {
+async function updateSavedStatus(messageData) {
     try {
         // Log the entire message data structure for debugging
         log('Updating saved status with data', 'info', messageData);
@@ -1807,6 +1807,21 @@ function updateSavedStatus(messageData) {
             userName = messageData.user_details.name;
             userEmail = messageData.user_details.email || '';
             log('Found user info in user_details property', 'info');
+        }
+        // If we still don't have user info, try to fetch it using user ID
+        else if (messageData.message && messageData.message.user_id) {
+            const userId = messageData.message.user_id;
+            log('Found user ID in message.user_id: ' + userId + ', fetching user details', 'info');
+            
+            const userDetails = await fetchUserDetails(userId);
+            if (userDetails && userDetails.name) {
+                userName = userDetails.name;
+                userEmail = userDetails.email || '';
+                log('Successfully fetched user details for saved status: ' + userName, 'info');
+            } else {
+                userName = `User ${userId}`;
+                log('Could not fetch user details for saved status, using fallback name', 'warning');
+            }
         }
         
         // Format the saved date - check all possible locations
@@ -3238,8 +3253,37 @@ async function markEmailAsHandled(note) {
     }
 }
 
+// Helper function to fetch user details by user ID
+async function fetchUserDetails(userId) {
+    try {
+        if (!userId) return null;
+        
+        log('Fetching user details for user ID: ' + userId, 'info');
+        
+        const response = await window.OpsieApi.apiRequest(`rpc/get_user_details`, 'POST', {
+            user_ids: [userId]
+        });
+        
+        if (response.success && response.data && response.data.length > 0) {
+            const user = response.data[0];
+            const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown User';
+            log('Successfully fetched user details: ' + userName, 'info');
+            return {
+                name: userName,
+                email: user.email || ''
+            };
+        }
+        
+        log('No user details found for user ID: ' + userId, 'warning');
+        return null;
+    } catch (error) {
+        log('Error fetching user details for user ID: ' + userId, 'error', error);
+        return null;
+    }
+}
+
 // Update the handling status display
-function updateHandlingStatus(messageData) {
+async function updateHandlingStatus(messageData) {
     try {
         // Get the handling status element
         const handlingStatusElement = document.getElementById('handling-status');
@@ -3306,14 +3350,20 @@ function updateHandlingStatus(messageData) {
             handledByName = messageData.handling.handledByName;
             log('Found handler name in handling.handledByName: ' + handledByName, 'info');
         }
-        // If we still don't have a name and we have a user_id, try to get user details
+        // If we still don't have a name and we have a user_id, fetch user details
         else if (messageData.message && messageData.message.handled_by) {
             const userId = messageData.message.handled_by;
             log('Found user ID in message.handled_by: ' + userId, 'info');
             
-            // We could optionally fetch user details from the server here,
-            // but for now we'll just log that we found a user ID
-            handledByName = `User ${userId}`;
+            // Fetch user details from the server
+            const userDetails = await fetchUserDetails(userId);
+            if (userDetails && userDetails.name) {
+                handledByName = userDetails.name;
+                log('Successfully fetched handler name: ' + handledByName, 'info');
+            } else {
+                handledByName = `User ${userId}`;
+                log('Could not fetch user details, using fallback name', 'warning');
+            }
         }
         
         log('Final handler name: ' + handledByName, 'info');
