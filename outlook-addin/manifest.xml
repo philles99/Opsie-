@@ -104,8 +104,8 @@
         <bt:Image id="Icon.80x80" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/assets/icon-80.png" />
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Commands.Url" DefaultValue="https://philles99.github.io/Opsie-/src/commands.html"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://philles99.github.io/Opsie-/src/taskpane.html"/>
+        <bt:Url id="Commands.Url" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/src/commands.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://philles99.github.io/Opsie-/outlook-addin/src/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GroupLabel" DefaultValue="Opsie Assistant" />
